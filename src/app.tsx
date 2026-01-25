@@ -1,5 +1,5 @@
 /** biome-ignore-all lint/correctness/useUniqueElementIds: it's alright */
-import { useEffect, useState, useRef, useCallback, use } from "react";
+import { useEffect, useState, useRef, useCallback, use, type SetStateAction } from "react";
 import { useAgent } from "agents/react";
 import { isStaticToolUIPart } from "ai";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
@@ -23,7 +23,8 @@ import {
   SunIcon,
   TrashIcon,
   PaperPlaneTiltIcon,
-  StopIcon
+  StopIcon,
+  MicrophoneIcon
 } from "@phosphor-icons/react";
 
 // List of tools that require human confirmation
@@ -39,6 +40,11 @@ export default function Chat() {
     return (savedTheme as "dark" | "light") || "dark";
   });
   const [showDebug, setShowDebug] = useState(false);
+  const [isRecording, setRecording] = useState(false);
+  const isRecordingRef = useRef(false);
+  const [isTranscribing, setTranscribing] = useState(false);
+  const mediaRecorder = useRef<MediaRecorder | null>(null);
+  const audioChunks = useRef<Blob[]>([]);
   const [textareaHeight, setTextareaHeight] = useState("auto");
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -113,6 +119,108 @@ export default function Chat() {
   } = useAgentChat<unknown, UIMessage<{ createdAt: string }>>({
     agent
   });
+
+    const handleVoiceInput = async () => 
+  {
+    if(isRecording)
+    {
+      mediaRecorder.current?.stop();
+      setRecording(false);
+      isRecordingRef.current = false;
+      return;
+    }
+
+    try
+    {
+      const stream = await navigator.mediaDevices.getUserMedia({audio:true});
+      const tempRecorder = new MediaRecorder(stream);
+      mediaRecorder.current = tempRecorder;
+      audioChunks.current = [];
+      
+      const audioContext = new AudioContext();
+      const analyser = audioContext.createAnalyser();
+      const mic = audioContext.createMediaStreamSource(stream);
+      mic.connect(analyser);
+      analyser.fftSize = 512;
+      const dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+      let silenceStart = Date.now();
+      const THRESHOLD = 10;
+      const DURATION = 2000;
+
+      const checkSilence = () => 
+      {
+        if(isRecording)
+        {
+          return;
+        }
+
+        analyser.getByteFrequencyData(dataArr);
+        const average = dataArr.reduce((a,b) => a+b) / dataArr.length;
+
+        if(average < THRESHOLD)
+        {
+          if(Date.now() - silenceStart > DURATION)
+          {
+            mediaRecorder.current?.stop();
+            setRecording(false);
+            audioContext.close();
+            return;
+          }
+        }
+        else
+        {
+          silenceStart = Date.now();
+        }
+
+        requestAnimationFrame(checkSilence);
+      };
+
+      tempRecorder.ondataavailable = (event) => 
+      {
+        audioChunks.current.push(event.data)
+      };
+
+      tempRecorder.onstop = async () => 
+      {
+        setTranscribing(true);
+        const blob = new Blob(audioChunks.current, {type: "audio/webm"});
+        const formData = new FormData();
+        formData.append("audio", blob);
+
+        try
+        {
+          const response = await fetch("/transcribe", {
+            method: "POST",
+            body: formData,
+          });
+          const data = await response.json() as { text?: string };
+          if(data.text)
+          {
+            await sendMessage({role: "user", parts:[{type: "text",text:data.text}]});
+          }
+        } 
+        catch(error)
+        {
+          console.error("Transcription error: ", error);
+        }
+        finally
+        {
+          setTranscribing(false);
+          stream.getTracks().forEach(track => track.stop());
+        }
+      };
+
+      tempRecorder.start();
+      setRecording(true);
+      checkSilence();
+      isRecordingRef.current = true;
+    }
+    catch(error)
+    {
+      console.error("Microphone access error: ", error);
+    }
+  }
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -387,7 +495,20 @@ export default function Chat() {
                 rows={2}
                 style={{ height: textareaHeight }}
               />
-              <div className="absolute bottom-0 right-0 p-2 w-fit flex flex-row justify-end">
+              <div className="absolute bottom-0 right-0 p-2 w-fit flex flex-row justify-end gap-2">
+                 <button
+                  type="button"
+                  onClick={handleVoiceInput}
+                  disabled={isTranscribing}
+                  className={`inline-flex items-center cursor-pointer justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 rounded-full p-1.5 h-fit border ${
+                    isRecording 
+                      ? "bg-red-500 text-white border-red-600 animate-pulse" 
+                      : "bg-primary text-primary-foreground hover:bg-primary/90 border-neutral-200 dark:border-neutral-800"
+                  }`}
+                  aria-label={isRecording ? "Stop recording" : "Start voice input"}
+                >
+                  <MicrophoneIcon size={16} />
+                </button>
                 {status === "submitted" || status === "streaming" ? (
                   <button
                     type="button"
