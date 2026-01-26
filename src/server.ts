@@ -6,13 +6,11 @@ import {
   generateId,
   streamText,
   type StreamTextOnFinishCallback,
-  stepCountIs,
   createUIMessageStream,
   convertToModelMessages,
   createUIMessageStreamResponse,
   type ToolSet
 } from "ai";
-import { openai } from "@ai-sdk/openai";
 import { processToolCalls, cleanupMessages } from "./utils";
 import { tools, executions } from "./tools";
 // import { env } from "cloudflare:workers";
@@ -70,7 +68,11 @@ export class Chat extends AIChatAgent<Env> {
     options?: { abortSignal?: AbortSignal }
   ) {
     const workersAI = createWorkersAI({ binding: this.env.AI });
-    const model = workersAI("@cf/meta/llama-3.3-70b-instruct-fp8-fast" as any);
+    const model = workersAI(
+      "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as unknown as Parameters<
+        typeof workersAI
+      >[0]
+    );
     // const mcpConnection = await this.mcp.connect(
     //   "https://path-to-mcp-server/sse"
     // );
@@ -84,15 +86,13 @@ export class Chat extends AIChatAgent<Env> {
     let mcpTools = {};
     try {
       mcpTools = this.mcp.getAITools();
-    } catch (e) {}
+    } catch (_e) {}
 
     // Collect all tools, including MCP tools
     const allTools = {
       ...tools,
       ...mcpTools
     };
-
-    const agent = this;
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -190,15 +190,15 @@ ${getSchedulePrompt({ date: new Date() })}
           onFinish: async (result) => {
             const text = result.text;
             const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;
-            let match;
+            const matches = text.matchAll(memoryRegex);
 
-            while ((match = memoryRegex.exec(text)) !== null) {
+            for (const match of matches) {
               const key = match[1].trim();
               const value = match[2].trim();
-              await agent.saveMemory(key, value);
+              await this.saveMemory(key, value);
               console.log(`Saved memory: ${key} = ${value}`);
             }
-
+            // biome-ignore lint/suspicious/noExplicitAny: Type mismatch with SDK callback
             (onFinish as any)(result);
           },
           // stopWhen: stepCountIs(10),

@@ -1,12 +1,5 @@
 /** biome-ignore-all lint/correctness/useUniqueElementIds: it's alright */
-import {
-  useEffect,
-  useState,
-  useRef,
-  useCallback,
-  use,
-  type SetStateAction
-} from "react";
+import { useEffect, useState, useRef, useCallback, use } from "react";
 import { useAgent } from "agents/react";
 import { isStaticToolUIPart } from "ai";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
@@ -201,7 +194,9 @@ export default function Chat() {
           console.error("Transcription error: ", error);
         } finally {
           setTranscribing(false);
-          stream.getTracks().forEach((track) => track.stop());
+          stream.getTracks().forEach((track) => {
+            track.stop();
+          });
         }
       };
 
@@ -213,7 +208,7 @@ export default function Chat() {
       console.error("Microphone access error: ", error);
     }
   };
-  const speakResponse = async (text: string) => {
+  const speakResponse = useCallback(async (text: string) => {
     try {
       const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, "").trim();
       console.log("Clean text to send:", cleanText);
@@ -245,7 +240,7 @@ export default function Chat() {
     } catch (error) {
       console.error("TTS Error: ", error);
     }
-  };
+  }, []);
 
   const lastSpoken = useRef<string | null>(null);
 
@@ -263,7 +258,7 @@ export default function Chat() {
         speakResponse(textPart.text);
       }
     }
-  }, [agentMessages, status]);
+  }, [agentMessages, status, speakResponse]);
 
   // Scroll to bottom when messages change
   useEffect(() => {
