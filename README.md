@@ -1,7 +1,9 @@
 # Jarvis - Voice-Enabled AI Assistant
 
 A personal AI assistant built entirely on Cloudflare's platform, featuring voice input/output, persistent memory, and a conversational personality inspired by Iron Man's Jarvis.
+
 [Link to the App](https://cf-ai-jarvis.duvvurisuryateja95.workers.dev/)
+
 ![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare)
 ![Workers AI](https://img.shields.io/badge/Workers-AI-F38020?logo=cloudflare)
 ![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript)
