@@ -1,256 +1,246 @@
-# 🤖 Chat Agent Starter Kit
+# Jarvis - Voice-Enabled AI Assistant
 
-![npm i agents command](./npm-agents-banner.svg)
+A personal AI assistant built entirely on Cloudflare's platform, featuring voice input/output, persistent memory, and a conversational personality inspired by Iron Man's Jarvis.
 
-<a href="https://deploy.workers.cloudflare.com/?url=https://github.com/cloudflare/agents-starter"><img src="https://deploy.workers.cloudflare.com/button" alt="Deploy to Cloudflare"/></a>
-
-A starter template for building AI-powered chat agents using Cloudflare's Agent platform, powered by [`agents`](https://www.npmjs.com/package/agents). This project provides a foundation for creating interactive chat experiences with AI, complete with a modern UI and tool integration capabilities.
+![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers-F38020?logo=cloudflare)
+![Workers AI](https://img.shields.io/badge/Workers-AI-F38020?logo=cloudflare)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.0-3178C6?logo=typescript)
+![React](https://img.shields.io/badge/React-19-61DAFB?logo=react)
 
 ## Features
 
-- 💬 Interactive chat interface with AI
-- 🛠️ Built-in tool system with human-in-the-loop confirmation
-- 📅 Advanced task scheduling (one-time, delayed, and recurring via cron)
-- 🌓 Dark/Light theme support
-- ⚡️ Real-time streaming responses
-- 🔄 State management and chat history
-- 🎨 Modern, responsive UI
+- **Voice Input** - Speak to Jarvis using your microphone (Whisper STT)
+- **Voice Output** - Jarvis responds with natural speech (Deepgram Aura TTS)
+- **Persistent Memory** - Remembers facts about you across conversations (SQLite in Durable Objects)
+- **Natural Conversation** - Powered by Llama 3.3 70B with a warm, butler-like personality
+- **Modern UI** - Clean React interface with Jarvis-blue theming
 
-## Prerequisites
+## Tech Stack
 
-- Cloudflare account
-- OpenAI API key (Find at [platform.openai.com](https://platform.openai.com/settings/organization/api-keys))
+| Component | Technology |
+|-----------|------------|
+| **LLM** | Llama 3.3 70B (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) |
+| **Speech-to-Text** | Whisper (`@cf/openai/whisper`) |
+| **Text-to-Speech** | Deepgram Aura (`@cf/deepgram/aura-1`) |
+| **State/Memory** | Durable Objects with SQLite |
+| **Backend** | Cloudflare Workers + Agents SDK |
+| **Frontend** | React 19 + Vite |
+| **Styling** | Tailwind CSS |
 
-## Quick Start
+**100% Cloudflare Stack** - No external API dependencies.
 
-1. Create a new project:
+## Architecture
+```mermaid
+flowchart TD
+    subgraph USER["User"]
+        VOICE_IN[Voice]
+        TEXT_IN[Text]
+        VOICE_OUT[Audio]
+        SCREEN[Chat Display]
+    end
 
-```bash
-npx create-cloudflare@latest --template cloudflare/agents-starter
+    subgraph FRONTEND["Frontend • React + Vite"]
+        MIC[MediaRecorder API Records voice input]
+        UI[Chat InterfaceSends & displays messages]
+        PLAYER[Audio Player Plays & Jarvis responses]
+    end
+
+    subgraph CLOUDFLARE["Cloudflare Workers"]
+        subgraph AI_MODELS["Workers AI Models"]
+            WHISPER["Whisper Speech-to-Text @cf/openai/whisper"]
+            LLAMA["Llama 3.3 70B Conversation & Reasoning @cf/meta/llama-3.3-70b-instruct"]
+            AURA["Deepgram AuraText-to-Speech@cf/deepgram/aura-1"]
+        end
+        
+        subgraph STORAGE["Durable Objects"]
+            SQLITE[("SQLite Persistent Memory Chat History")]
+        end
+    end
+
+    %% User to Frontend
+    VOICE_IN --> MIC
+    TEXT_IN --> UI
+    PLAYER --> VOICE_OUT
+    UI --> SCREEN
+
+    %% Frontend to Backend
+    MIC -->|"WebM audio"| WHISPER
+    WHISPER -->|"Transcribed text"| UI
+    UI -->|" "| LLAMA
+    LLAMA -->|" "| UI
+    UI -->|"Response text"| AURA
+    AURA -->|"MP3 audio"| PLAYER
+
+    %% LLM to Storage
+    LLAMA -->|"Read/Write memories"| SQLITE
 ```
 
-2. Install dependencies:
+### How It Works
 
-```bash
-npm install
-```
+1. **You speak** → Microphone records audio → Whisper converts to text
+2. **You type** → Text goes directly to chat
+3. **Jarvis thinks** → Llama 3.3 processes your message, checks memories
+4. **Jarvis remembers** → Important facts saved to SQLite
+5. **Jarvis responds** → Text appears in chat
+6. **Jarvis speaks** → Deepgram Aura converts response to audio
 
-3. Set up your environment:
+## Getting Started
 
-Create a `.dev.vars` file:
+### Prerequisites
 
-```env
-OPENAI_API_KEY=your_openai_api_key
-```
+- Node.js 18+
+- A Cloudflare account
+- Wrangler CLI (`npm install -g wrangler`)
 
-4. Run locally:
+### Installation
 
-```bash
-npm start
-```
+1. **Clone the repository**
+   ```bash
+   git clone <your-repo-url>
+   cd cf_ai_jarvis
+   ```
 
-5. Deploy:
+2. **Install dependencies**
+   ```bash
+   npm install
+   ```
+
+3. **Login to Cloudflare**
+   ```bash
+   wrangler login
+   ```
+
+4. **Run locally**
+   ```bash
+   npm start
+   ```
+
+5. **Open in browser**
+   ```
+   http://localhost:5174
+   ```
+
+### Deployment
+
+Deploy to Cloudflare Workers:
 
 ```bash
 npm run deploy
 ```
 
+Your Jarvis assistant will be live at your Workers URL.
+
+## Usage
+
+### Text Chat
+Simply type in the chat box and press Enter or click the send button.
+
+### Voice Input
+1. Click the microphone button
+2. Speak your message
+3. Stop speaking for 2 seconds - it will auto-send
+4. Or click the mic again to stop manually
+
+### Memory
+Jarvis automatically remembers things you tell him:
+- "My name is John" → Jarvis remembers your name
+- "I work at Google" → Jarvis remembers your job
+- "I prefer morning meetings" → Jarvis remembers your preferences
+
+Clear the chat and start a new conversation Jarvis will still remember!
+
+
+
 ## Project Structure
 
 ```
+cf_ai_jarvis/
 ├── src/
-│   ├── app.tsx        # Chat UI implementation
-│   ├── server.ts      # Chat agent logic
-│   ├── tools.ts       # Tool definitions
-│   ├── utils.ts       # Helper functions
-│   └── styles.css     # UI styling
+│   ├── server.ts      # Backend: Agent, memory, API endpoints
+│   ├── app.tsx        # Frontend: React UI
+│   ├── tools.ts       # Tool definitions (optional)
+│   └── utils.ts       # Utility functions
+├── wrangler.jsonc     # Cloudflare configuration
+├── package.json
+└── README.md
 ```
 
-## Customization Guide
+## Key Implementation Details
 
-### Adding New Tools
+### Memory System
 
-Add new tools in `tools.ts` using the tool builder:
-
-```ts
-// Example of a tool that requires confirmation
-const searchDatabase = tool({
-  description: "Search the database for user records",
-  parameters: z.object({
-    query: z.string(),
-    limit: z.number().optional()
-  })
-  // No execute function = requires confirmation
-});
-
-// Example of an auto-executing tool
-const getCurrentTime = tool({
-  description: "Get current server time",
-  parameters: z.object({}),
-  execute: async () => new Date().toISOString()
-});
-
-// Scheduling tool implementation
-const scheduleTask = tool({
-  description:
-    "schedule a task to be executed at a later time. 'when' can be a date, a delay in seconds, or a cron pattern.",
-  parameters: z.object({
-    type: z.enum(["scheduled", "delayed", "cron"]),
-    when: z.union([z.number(), z.string()]),
-    payload: z.string()
-  }),
-  execute: async ({ type, when, payload }) => {
-    // ... see the implementation in tools.ts
-  }
-});
-```
-
-To handle tool confirmations, add execution functions to the `executions` object:
+Jarvis uses SQLite (via Durable Objects) to persist memories:
 
 ```typescript
-export const executions = {
-  searchDatabase: async ({
-    query,
-    limit
-  }: {
-    query: string;
-    limit?: number;
-  }) => {
-    // Implementation for when the tool is confirmed
-    const results = await db.search(query, limit);
-    return results;
-  }
-  // Add more execution handlers for other tools that require confirmation
-};
+// Save a memory
+await this.saveMemory("name", "John");
+
+// Retrieve all memories
+const memories = await this.getMemories();
 ```
 
-Tools can be configured in two ways:
+Memories are automatically extracted from Jarvis's responses using the pattern `[MEMORY: key=value]` and stored in the database.
 
-1. With an `execute` function for automatic execution
-2. Without an `execute` function, requiring confirmation and using the `executions` object to handle the confirmed action. NOTE: The keys in `executions` should match `toolsRequiringConfirmation` in `app.tsx`.
+### Voice Pipeline
 
-### Use a different AI model provider
+1. **Input**: Browser MediaRecorder → WebM audio → `/transcribe` → Whisper → Text
+2. **Processing**: Text → Llama 3.3 70B → Response text
+3. **Output**: Response text → `/speak` → Deepgram Aura → Audio playback
 
-The starting [`server.ts`](https://github.com/cloudflare/agents-starter/blob/main/src/server.ts) implementation uses the [`ai-sdk`](https://sdk.vercel.ai/docs/introduction) and the [OpenAI provider](https://sdk.vercel.ai/providers/ai-sdk-providers/openai), but you can use any AI model provider by:
+### Silence Detection
 
-1. Installing an alternative AI provider for the `ai-sdk`, such as the [`workers-ai-provider`](https://sdk.vercel.ai/providers/community-providers/cloudflare-workers-ai) or [`anthropic`](https://sdk.vercel.ai/providers/ai-sdk-providers/anthropic) provider:
-2. Replacing the AI SDK with the [OpenAI SDK](https://github.com/openai/openai-node)
-3. Using the Cloudflare [Workers AI + AI Gateway](https://developers.cloudflare.com/ai-gateway/providers/workersai/#workers-binding) binding API directly
+Voice input automatically stops after 2 seconds of silence using Web Audio API:
 
-For example, to use the [`workers-ai-provider`](https://sdk.vercel.ai/providers/community-providers/cloudflare-workers-ai), install the package:
-
-```sh
-npm install workers-ai-provider
+```typescript
+const analyser = audioContext.createAnalyser();
+// Monitor audio levels, stop when silent
 ```
 
-Add an `ai` binding to `wrangler.jsonc`:
+## Configuration
+
+Edit `wrangler.jsonc` to customize:
 
 ```jsonc
-// rest of file
+{
+  "name": "cf-ai-jarvis",
   "ai": {
     "binding": "AI"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "Chat",
+        "class_name": "Chat"
+      }
+    ]
   }
-// rest of file
+}
 ```
 
-Replace the `@ai-sdk/openai` import and usage with the `workers-ai-provider`:
+## Prompt Engineering
 
-```diff
-// server.ts
-// Change the imports
-- import { openai } from "@ai-sdk/openai";
-+ import { createWorkersAI } from 'workers-ai-provider';
+See [PROMPTS.md](./PROMPTS.md) for detailed documentation of the system prompts used in this project.
 
-// Create a Workers AI instance
-+ const workersai = createWorkersAI({ binding: env.AI });
+## Limitations
 
-// Use it when calling the streamText method (or other methods)
-// from the ai-sdk
-- const model = openai("gpt-4o-2024-11-20");
-+ const model = workersai("@cf/deepseek-ai/deepseek-r1-distill-qwen-32b")
-```
+- Voice output requires user interaction first (browser autoplay policy)
+- Memory is per-user session (based on Durable Object ID)
+- Whisper may have slight latency for longer audio clips
 
-Commit your changes and then run the `agents-starter` as per the rest of this README.
+## Future Improvements
 
-### Modifying the UI
-
-The chat interface is built with React and can be customized in `app.tsx`:
-
-- Modify the theme colors in `styles.css`
-- Add new UI components in the chat container
-- Customize message rendering and tool confirmation dialogs
-- Add new controls to the header
-
-### Example Use Cases
-
-1. **Customer Support Agent**
-   - Add tools for:
-     - Ticket creation/lookup
-     - Order status checking
-     - Product recommendations
-     - FAQ database search
-
-2. **Development Assistant**
-   - Integrate tools for:
-     - Code linting
-     - Git operations
-     - Documentation search
-     - Dependency checking
-
-3. **Data Analysis Assistant**
-   - Build tools for:
-     - Database querying
-     - Data visualization
-     - Statistical analysis
-     - Report generation
-
-4. **Personal Productivity Assistant**
-   - Implement tools for:
-     - Task scheduling with flexible timing options
-     - One-time, delayed, and recurring task management
-     - Task tracking with reminders
-     - Email drafting
-     - Note taking
-
-5. **Scheduling Assistant**
-   - Build tools for:
-     - One-time event scheduling using specific dates
-     - Delayed task execution (e.g., "remind me in 30 minutes")
-     - Recurring tasks using cron patterns
-     - Task payload management
-     - Flexible scheduling patterns
-
-Each use case can be implemented by:
-
-1. Adding relevant tools in `tools.ts`
-2. Customizing the UI for specific interactions
-3. Extending the agent's capabilities in `server.ts`
-4. Adding any necessary external API integrations
-
-## Screenshots
-
-**Chat Interface**
-
-<img width="324" alt="Chat interface" src="https://github.com/user-attachments/assets/ea469652-f881-44eb-809e-7e42956d0fcf" />
-
-**Tool Confirmation Flow**
-
-<img width="351" alt="Tool confirmation" src="https://github.com/user-attachments/assets/09539bea-c989-4e3a-b201-d40f9310d442" />
-
-**Task Scheduling**
-
-<img width="449" alt="Task scheduling" src="https://github.com/user-attachments/assets/0d0f5e1c-b83f-4ce7-8ed6-a68ab60ce249" />
-
-**Light Theme**
-
-<img width="548" alt="Theme toggle" src="https://github.com/user-attachments/assets/51ef37cb-822b-42dd-af3d-e490916183f7" />
-
-## Learn More
-
-- [`agents`](https://github.com/cloudflare/agents/blob/main/packages/agents/README.md)
-- [Cloudflare Agents Documentation](https://developers.cloudflare.com/agents/)
-- [Cloudflare Workers Documentation](https://developers.cloudflare.com/workers/)
+- [ ] Add tool calling for tasks/reminders
+- [ ] Implement wake word detection ("Hey Jarvis")
+- [ ] Add conversation history export
+- [ ] Multi-language support
+- [ ] Custom voice selection
 
 ## License
 
 MIT
+
+## Acknowledgments
+
+- Built with [Cloudflare Workers AI](https://developers.cloudflare.com/workers-ai/)
+- Agents SDK by [Cloudflare](https://github.com/cloudflare/agents)
+- Inspired by J.A.R.V.I.S. from Iron Man
