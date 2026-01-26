@@ -24,21 +24,18 @@ import { tools, executions } from "./tools";
 //   baseURL: env.GATEWAY_BASE_URL,
 // });
 
-interface Memory
-{
-  id:number;
-  key:string;
-  value:string;
-  createdAt:string;
+interface Memory {
+  id: number;
+  key: string;
+  value: string;
+  createdAt: string;
 }
 
 /**
  * Chat Agent implementation that handles real-time AI chat interactions
  */
 export class Chat extends AIChatAgent<Env> {
-
-  private async initMemory()
-  {
+  private async initMemory() {
     this.sql`
       CREATE TABLE IF NOT EXISTS memories (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -49,22 +46,19 @@ export class Chat extends AIChatAgent<Env> {
     `;
   }
 
-  async saveMemory(key:string,value:string)
-  {
+  async saveMemory(key: string, value: string) {
     await this.initMemory();
     this.sql`
       INSERT OR REPLACE INTO memories (key,value,created_at)
       VALUES (${key},${value},CURRENT_TIMESTAMP)
     `;
   }
-  async getMemories():Promise<Memory[]>
-  {
+  async getMemories(): Promise<Memory[]> {
     await this.initMemory();
     return this.sql<Memory>`SELECT * FROM memories ORDER BY created_at DESC`;
   }
 
-  async deleteMemories(key:string)
-  {
+  async deleteMemories(key: string) {
     await this.initMemory();
     this.sql`DELETE FROM memories WHERE key = ${key}`;
   }
@@ -75,27 +69,22 @@ export class Chat extends AIChatAgent<Env> {
     onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: { abortSignal?: AbortSignal }
   ) {
-    
-    const workersAI = createWorkersAI({binding: this.env.AI});
-    const model =  workersAI("@cf/meta/llama-3.3-70b-instruct-fp8-fast" as any);
+    const workersAI = createWorkersAI({ binding: this.env.AI });
+    const model = workersAI("@cf/meta/llama-3.3-70b-instruct-fp8-fast" as any);
     // const mcpConnection = await this.mcp.connect(
     //   "https://path-to-mcp-server/sse"
     // );
 
-    const memories = await this.getMemories()
-    const memoryContext = memories.length > 0 ?
-     `\n\nYou remember the following about the user:\n${memories.map(m => `- ${m.key}: ${m.value}`).join('\n')}`
-     : '';
+    const memories = await this.getMemories();
+    const memoryContext =
+      memories.length > 0
+        ? `\n\nYou remember the following about the user:\n${memories.map((m) => `- ${m.key}: ${m.value}`).join("\n")}`
+        : "";
 
-    let mcpTools = {}
-    try
-    {
+    let mcpTools = {};
+    try {
       mcpTools = this.mcp.getAITools();
-    }
-    catch(e)
-    {
-      
-    }
+    } catch (e) {}
 
     // Collect all tools, including MCP tools
     const allTools = {
@@ -192,19 +181,18 @@ ${getSchedulePrompt({ date: new Date() })}
           messages: await convertToModelMessages(processedMessages),
           model,
           // tools: allTools,
-          toolChoice:"auto",
+          toolChoice: "auto",
           // Type boundary: streamText expects specific tool types, but base class uses ToolSet
           // This is safe because our tools satisfy ToolSet interface (verified by 'satisfies' in tools.ts)
           // onFinish: onFinish as unknown as StreamTextOnFinishCallback<
           //   typeof allTools
           // >,
-          onFinish: async(result) => {
+          onFinish: async (result) => {
             const text = result.text;
             const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;
             let match;
 
-            while ((match = memoryRegex.exec(text)) !== null) 
-            {
+            while ((match = memoryRegex.exec(text)) !== null) {
               const key = match[1].trim();
               const value = match[2].trim();
               await agent.saveMemory(key, value);
@@ -257,57 +245,56 @@ export default {
       });
     }
 
-    if(url.pathname === "/transcribe" && request.method === "POST")
-    {
-      try 
-      {
+    if (url.pathname === "/transcribe" && request.method === "POST") {
+      try {
         const formData = await request.formData();
         const audioFile = formData.get("audio") as File;
 
-        if(!audioFile)
-        {
-          return Response.json({error: "No file provided."}, {status:400});
+        if (!audioFile) {
+          return Response.json({ error: "No file provided." }, { status: 400 });
         }
 
         const buffer = await audioFile.arrayBuffer();
         const result = await env.AI.run("@cf/openai/whisper", {
-          audio: [...new Uint8Array(buffer)],
+          audio: [...new Uint8Array(buffer)]
         });
 
-        return Response.json({text: result.text});
-      }
-      catch(error)
-      {
+        return Response.json({ text: result.text });
+      } catch (error) {
         console.error("Transcription error: ", error);
-        return Response.json({error: "Transcription failed"}, {status: 400});
+        return Response.json(
+          { error: "Transcription failed" },
+          { status: 400 }
+        );
       }
     }
 
-    if(url.pathname === "/speak" && request.method === "POST")
-    {
-      try
-      {
-        const {text} = await request.json() as {text?:string};
-        if(!text)
-        {
-          return Response.json({error: "No text provided"},{status:400});
+    if (url.pathname === "/speak" && request.method === "POST") {
+      try {
+        const { text } = (await request.json()) as { text?: string };
+        if (!text) {
+          return Response.json({ error: "No text provided" }, { status: 400 });
         }
 
-        const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, '').trim();
+        const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, "").trim();
 
-        const result = await env.AI.run("@cf/deepgram/aura-1", {
-          text: cleanText,
-          speaker:"arcas",
-        }, {returnRawResponse:true});
+        const result = await env.AI.run(
+          "@cf/deepgram/aura-1",
+          {
+            text: cleanText,
+            speaker: "arcas"
+          },
+          { returnRawResponse: true }
+        );
 
         // return Response.json({audio:result.audio});
         return result;
-
-      }
-      catch(error)
-      {
+      } catch (error) {
         console.error("TTS error: ", error);
-        return Response.json({error: "Speech syntehsis failed"}, {status: 500});
+        return Response.json(
+          { error: "Speech syntehsis failed" },
+          { status: 500 }
+        );
       }
     }
     // if (!process.env.OPENAI_API_KEY) {

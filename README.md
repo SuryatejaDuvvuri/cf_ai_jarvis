@@ -19,19 +19,20 @@ A personal AI assistant built entirely on Cloudflare's platform, featuring voice
 
 ## Tech Stack
 
-| Component | Technology |
-|-----------|------------|
-| **LLM** | Llama 3.3 70B (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) |
-| **Speech-to-Text** | Whisper (`@cf/openai/whisper`) |
-| **Text-to-Speech** | Deepgram Aura (`@cf/deepgram/aura-1`) |
-| **State/Memory** | Durable Objects with SQLite |
-| **Backend** | Cloudflare Workers + Agents SDK |
-| **Frontend** | React 19 + Vite |
-| **Styling** | Tailwind CSS |
+| Component          | Technology                                                 |
+| ------------------ | ---------------------------------------------------------- |
+| **LLM**            | Llama 3.3 70B (`@cf/meta/llama-3.3-70b-instruct-fp8-fast`) |
+| **Speech-to-Text** | Whisper (`@cf/openai/whisper`)                             |
+| **Text-to-Speech** | Deepgram Aura (`@cf/deepgram/aura-1`)                      |
+| **State/Memory**   | Durable Objects with SQLite                                |
+| **Backend**        | Cloudflare Workers + Agents SDK                            |
+| **Frontend**       | React 19 + Vite                                            |
+| **Styling**        | Tailwind CSS                                               |
 
 **100% Cloudflare Stack** - No external API dependencies.
 
 ## Architecture
+
 ```mermaid
 flowchart TD
     subgraph USER["User"]
@@ -53,7 +54,7 @@ flowchart TD
             LLAMA["Llama 3.3 70B Conversation & Reasoning @cf/meta/llama-3.3-70b-instruct"]
             AURA["Deepgram AuraText-to-Speech@cf/deepgram/aura-1"]
         end
-        
+
         subgraph STORAGE["Durable Objects"]
             SQLITE[("SQLite Persistent Memory Chat History")]
         end
@@ -97,22 +98,26 @@ flowchart TD
 ### Installation
 
 1. **Clone the repository**
+
    ```bash
    git clone <your-repo-url>
    cd cf_ai_jarvis
    ```
 
 2. **Install dependencies**
+
    ```bash
    npm install
    ```
 
 3. **Login to Cloudflare**
+
    ```bash
    wrangler login
    ```
 
 4. **Run locally**
+
    ```bash
    npm start
    ```
@@ -135,23 +140,25 @@ Your Jarvis assistant will be live at your Workers URL.
 ## Usage
 
 ### Text Chat
+
 Simply type in the chat box and press Enter or click the send button.
 
 ### Voice Input
+
 1. Click the microphone button
 2. Speak your message
 3. Stop speaking for 2 seconds - it will auto-send
 4. Or click the mic again to stop manually
 
 ### Memory
+
 Jarvis automatically remembers things you tell him:
+
 - "My name is John" → Jarvis remembers your name
 - "I work at Google" → Jarvis remembers your job
 - "I prefer morning meetings" → Jarvis remembers your preferences
 
 Clear the chat and start a new conversation Jarvis will still remember!
-
-
 
 ## Project Structure
 
