@@ -24,10 +24,50 @@ import { tools, executions } from "./tools";
 //   baseURL: env.GATEWAY_BASE_URL,
 // });
 
+interface Memory
+{
+  id:number;
+  key:string;
+  value:string;
+  createdAt:string;
+}
+
 /**
  * Chat Agent implementation that handles real-time AI chat interactions
  */
 export class Chat extends AIChatAgent<Env> {
+
+  private async initMemory()
+  {
+    this.sql`
+      CREATE TABLE IF NOT EXISTS memories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      key TEXT NOT NULL UNIQUE,
+      value TEXT NOT NULL,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP
+      )
+    `;
+  }
+
+  async saveMemory(key:string,value:string)
+  {
+    await this.initMemory();
+    this.sql`
+      INSERT OR REPLACE INTO memories (key,value,created_at)
+      VALUES (${key},${value},CURRENT_TIMESTAMP)
+    `;
+  }
+  async getMemories():Promise<Memory[]>
+  {
+    await this.initMemory();
+    return this.sql<Memory>`SELECT * FROM memories ORDER BY created_at DESC`;
+  }
+
+  async deleteMemories(key:string)
+  {
+    await this.initMemory();
+    this.sql`DELETE FROM memories WHERE key = ${key}`;
+  }
   /**
    * Handles incoming chat messages and manages the response stream
    */
@@ -42,6 +82,11 @@ export class Chat extends AIChatAgent<Env> {
     //   "https://path-to-mcp-server/sse"
     // );
 
+    const memories = await this.getMemories()
+    const memoryContext = memories.length > 0 ?
+     `\n\nYou remember the following about the user:\n${memories.map(m => `- ${m.key}: ${m.value}`).join('\n')}`
+     : '';
+
     let mcpTools = {}
     try
     {
@@ -49,7 +94,7 @@ export class Chat extends AIChatAgent<Env> {
     }
     catch(e)
     {
-
+      
     }
 
     // Collect all tools, including MCP tools
@@ -57,6 +102,8 @@ export class Chat extends AIChatAgent<Env> {
       ...tools,
       ...mcpTools
     };
+
+    const agent = this;
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
@@ -74,7 +121,25 @@ export class Chat extends AIChatAgent<Env> {
 
         const result = streamText({
           system: `You are Jarvis, a personal AI assistant. You are helpful, conversational with a good sense of humor and efficient. You don't waste words.
-          
+
+          CRITICAL INSTRUCTION - READ THIS FIRST:
+          Before responding, ask yourself: "Did the user EXPLICITLY ask me to do something that requires a tool?"
+
+          Examples of when NOT to use tools:
+          - "Hello" → Just say hello back. NO TOOLS.
+          - "Hi Jarvis" → Greet them warmly. NO TOOLS.
+          - "How are you?" → Reply conversationally. NO TOOLS.
+          - "What can you do?" → Explain your capabilities. NO TOOLS.
+          - "Thanks" → You're welcome. NO TOOLS.
+
+          Examples of when TO use tools:
+          - "Remind me to call mom in 5 minutes" → Use scheduleTask
+          - "What's the weather in Tokyo?" → Use getWeatherInformation  
+          - "What time is it in London?" → Use getLocalTime
+          - "Show my reminders" → Use getScheduledTasks
+          - "Cancel that reminder" → Use cancelScheduledTask
+
+          If the answer is NO, just respond conversationally. DO NOT use any tools.
           Your personality:
             - You address the user as "sir" or by their name once you know it
             - Warm, American butler vibes, but modern and professional who's also a friend
@@ -87,20 +152,39 @@ export class Chat extends AIChatAgent<Env> {
             - "Good evening, sir. What shall we tackle today?"
             - "Welcome back, sir. What's on the agenda?"
             - "Hello, sir. Ready to get to work?"
-            - After learning their name: "Good to see you {name} What do we have today?"
+            - After learning their name: "Good to see you [name]. What do we have today?"
 
           You have access to these capabilities:
           - Task scheduling and reminders
           - General knowledge and conversation
           - Weather information (requires confirmation)
-          
 
-          IMPORTANT: Only use tools when the user explicitly asks for something that requires them.
-          - By default, just respond conversationally. 
-          - Keep responses personable and concise unless the user asks for detail.
-          - You're not just an assistant: you're a capable companion who happens to be incredibly helpful.
-          - If the user asks to schedule a task, use the schedule tool to schedule the task.
-          - If the user asks about the weather, use the getWeatherInformation tool.
+          ${memoryContext}
+
+          MEMORY INSTRUCTIONS:
+          When the user tells you personal information (their name, preferences, job, interests, etc.), you should remember it.
+          To save a memory, include this EXACT format somewhere in your response:
+          [MEMORY: key=value]
+
+          Examples:
+          - User says "My name is John" → Include [MEMORY: name=John] in your response
+          - User says "I work at Google" → Include [MEMORY: job=Works at Google]
+          - User says "I prefer morning meetings" → Include [MEMORY: preference=Prefers morning meetings]
+          - User says "I'm working on a React project" → Include [MEMORY: current_project=React project]
+
+          Only save important, persistent facts. Don't save temporary things like "user said hello".
+
+          TOOL USAGE RULES - VERY IMPORTANT:
+          - You have access to tools, but you must be VERY selective about using them.
+
+         ONLY use tools when the user EXPLICITLY requests:
+          - scheduleTask: ONLY when user says "remind me", "schedule", "set a reminder", "in X minutes/hours"
+          - getWeatherInformation: ONLY when user asks "what's the weather", "how's the weather"
+          - getLocalTime: ONLY when user asks "what time is it in [location]"
+          - getScheduledTasks: ONLY when user asks "what are my tasks", "show my reminders"
+          - cancelScheduledTask: ONLY when user asks to "cancel" a specific task
+
+          If in doubt, DO NOT use a tool. Just respond conversationally.
 
 ${getSchedulePrompt({ date: new Date() })}
 `,
@@ -108,12 +192,28 @@ ${getSchedulePrompt({ date: new Date() })}
           messages: await convertToModelMessages(processedMessages),
           model,
           // tools: allTools,
+          toolChoice:"auto",
           // Type boundary: streamText expects specific tool types, but base class uses ToolSet
           // This is safe because our tools satisfy ToolSet interface (verified by 'satisfies' in tools.ts)
-          onFinish: onFinish as unknown as StreamTextOnFinishCallback<
-            typeof allTools
-          >,
-          stopWhen: stepCountIs(10),
+          // onFinish: onFinish as unknown as StreamTextOnFinishCallback<
+          //   typeof allTools
+          // >,
+          onFinish: async(result) => {
+            const text = result.text;
+            const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;
+            let match;
+
+            while ((match = memoryRegex.exec(text)) !== null) 
+            {
+              const key = match[1].trim();
+              const value = match[2].trim();
+              await agent.saveMemory(key, value);
+              console.log(`Saved memory: ${key} = ${value}`);
+            }
+
+            (onFinish as any)(result);
+          },
+          // stopWhen: stepCountIs(10),
           abortSignal: options?.abortSignal
         });
 
@@ -193,13 +293,21 @@ export default {
           return Response.json({error: "No text provided"},{status:400});
         }
 
-        const audio = await env.AI.run("@cf/myshell-ai/melotts", {
-          text: text
-        })
+        const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, '').trim();
+
+        const result = await env.AI.run("@cf/deepgram/aura-1", {
+          text: cleanText,
+          speaker:"arcas",
+        }, {returnRawResponse:true});
+
+        // return Response.json({audio:result.audio});
+        return result;
+
       }
       catch(error)
       {
-
+        console.error("TTS error: ", error);
+        return Response.json({error: "Speech syntehsis failed"}, {status: 500});
       }
     }
     // if (!process.env.OPENAI_API_KEY) {

@@ -51,14 +51,14 @@ export function ToolInvocationCard({
         className="w-full flex items-center gap-2 cursor-pointer"
       >
         <div
-          className={`${needsConfirmation ? "bg-[#F48120]/10" : "bg-[#F48120]/5"} p-1.5 rounded-full shrink-0`}
+          className={`${needsConfirmation ? "bg-[#0EA5E9]/10" : "bg-[#0EA5E9]/5"} p-1.5 rounded-full shrink-0`}
         >
-          <RobotIcon size={16} className="text-[#F48120]" />
+          <RobotIcon size={16} className="text-[#0EA5E9]" />
         </div>
         <h4 className="font-medium flex items-center gap-2 flex-1 text-left">
           {toolUIPart.type}
           {!needsConfirmation && toolUIPart.state === "output-available" && (
-            <span className="text-xs text-[#F48120]/70">✓ Completed</span>
+            <span className="text-xs text-[#0EA5E9]/70">✓ Completed</span>
           )}
         </h4>
         <CaretDownIcon
@@ -103,7 +103,7 @@ export function ToolInvocationCard({
           )}
 
           {!needsConfirmation && toolUIPart.state === "output-available" && (
-            <div className="mt-3 border-t border-[#F48120]/10 pt-3">
+            <div className="mt-3 border-t border-[#0EA5E9]/10 pt-3">
               <h5 className="text-xs font-medium mb-1 text-muted-foreground">
                 Result:
               </h5>

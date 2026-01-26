@@ -26,6 +26,7 @@ import {
   StopIcon,
   MicrophoneIcon
 } from "@phosphor-icons/react";
+// import { text } from "node:stream/consumers";
 
 // List of tools that require human confirmation
 // NOTE: this should match the tools that don't have execute functions in tools.ts
@@ -221,6 +222,64 @@ export default function Chat() {
       console.error("Microphone access error: ", error);
     }
   }
+const speakResponse = async(text:string) =>
+{
+  try
+  {
+    const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, '').trim();
+    console.log("Clean text to send:", cleanText);
+    if (!cleanText) 
+    {
+      console.log("Text is empty, skipping TTS");
+      return;
+    }
+    const response = await fetch("/speak", {
+      method: "POST",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({text:cleanText}),
+    });
+
+    if(response.ok)
+    {
+      // const data = await response.json() as {audio:string};
+      // if(data.audio)
+      // {
+      //   const src = `data:audio/mp3;base64, ${data.audio}`;
+      //   const audio = new Audio(src);
+      //   audio.play()
+      // }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      audio.play();
+    }
+    else 
+    {
+      console.error("TTS failed with status:", response.status);
+    }
+  }
+  catch(error)
+  {
+    console.error("TTS Error: ", error);
+  }
+}
+
+const lastSpoken = useRef<string | null>(null);
+
+
+useEffect(() => {
+  const lastMsg = agentMessages[agentMessages.length - 1];
+
+  if(lastMsg?.role === "assistant" && status === "ready")
+  {
+    const textPart = lastMsg.parts?.find(p => p.type === "text");
+    if(textPart && "text" in textPart && textPart.text !== lastSpoken.current)
+    {
+      lastSpoken.current = textPart.text
+      speakResponse(textPart.text);
+    }
+  }
+}, [agentMessages, status])
 
   // Scroll to bottom when messages change
   useEffect(() => {
@@ -252,7 +311,7 @@ export default function Chat() {
             <svg
               width="28px"
               height="28px"
-              className="text-[#F48120]"
+              className="text-[#0EA5E9]"
               data-icon="agents"
             >
               <title>Cloudflare Agents</title>
@@ -267,7 +326,7 @@ export default function Chat() {
           </div>
 
           <div className="flex-1">
-            <h2 className="font-semibold text-base">AI Chat Agent</h2>
+            <h2 className="font-semibold text-base text-[#0EA5E9] drop-shadow-[0_0_10px_rgba(14,165,233,0.5)]">Jarvis</h2>
           </div>
 
           <div className="flex items-center gap-2 mr-2">
@@ -303,31 +362,34 @@ export default function Chat() {
         {/* Messages */}
         <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-24 max-h-[calc(100vh-10rem)]">
           {agentMessages.length === 0 && (
-            <div className="h-full flex items-center justify-center">
-              <Card className="p-6 max-w-md mx-auto bg-neutral-100 dark:bg-neutral-900">
-                <div className="text-center space-y-4">
-                  <div className="bg-[#F48120]/10 text-[#F48120] rounded-full p-3 inline-flex">
-                    <RobotIcon size={24} />
-                  </div>
-                  <h3 className="font-semibold text-lg">Welcome to AI Chat</h3>
-                  <p className="text-muted-foreground text-sm">
-                    Start a conversation with your AI assistant. Try asking
-                    about:
-                  </p>
-                  <ul className="text-sm text-left space-y-2">
-                    <li className="flex items-center gap-2">
-                      <span className="text-[#F48120]">•</span>
-                      <span>Weather information for any city</span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="text-[#F48120]">•</span>
-                      <span>Local time in different locations</span>
-                    </li>
-                  </ul>
+          <div className="h-full flex items-center justify-center">
+            <Card className="p-6 max-w-md mx-auto bg-neutral-100 dark:bg-neutral-900">
+              <div className="text-center space-y-4">
+                <div className="bg-[#0EA5E9]/10 text-[#0EA5E9] rounded-full p-3 inline-flex">
+                  <RobotIcon size={24} />
                 </div>
-              </Card>
-            </div>
-          )}
+                <h3 className="font-semibold text-lg">Good evening, sir.</h3>
+                <p className="text-muted-foreground text-sm">
+                  I'm Jarvis, your personal AI assistant. How may I help you today?
+                </p>
+                <ul className="text-sm text-left space-y-2">
+                  <li className="flex items-center gap-2">
+                    <span className="text-[#0EA5E9]">•</span>
+                    <span>Ask me anything</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <span className="text-[#0EA5E9]">•</span>
+                    <span>Click the mic to speak</span>
+                  </li>
+                  <li className="flex items-center gap-2">
+                    <span className="text-[#0EA5E9]">•</span>
+                    <span>I'll remember what you tell me</span>
+                  </li>
+                </ul>
+              </div>
+            </Card>
+          </div>
+        )}
 
           {agentMessages.map((m, index) => {
             const isUser = m.role === "user";
@@ -350,7 +412,7 @@ export default function Chat() {
                     }`}
                   >
                     {showAvatar && !isUser ? (
-                      <Avatar username={"AI"} className="shrink-0" />
+                      <Avatar username={"J"} className="shrink-0" />
                     ) : (
                       !isUser && <div className="w-8" />
                     )}
@@ -359,6 +421,7 @@ export default function Chat() {
                       <div>
                         {m.parts?.map((part, i) => {
                           if (part.type === "text") {
+                            const cleanText = part.text.replace(/\[MEMORY:[^\]]+\]/g, '').trim();
                             return (
                               // biome-ignore lint/suspicious/noArrayIndexKey: immutable index
                               <div key={i}>
@@ -366,14 +429,14 @@ export default function Chat() {
                                   className={`p-3 rounded-md bg-neutral-100 dark:bg-neutral-900 ${
                                     isUser
                                       ? "rounded-br-none"
-                                      : "rounded-bl-none border-assistant-border"
+                                      : "rounded-bl-none border-assistant-border-l-[#0EA5E9]"
                                   } ${
-                                    part.text.startsWith("scheduled message")
+                                    cleanText.startsWith("scheduled message")
                                       ? "border-accent/50"
                                       : ""
                                   } relative`}
                                 >
-                                  {part.text.startsWith(
+                                  {cleanText.startsWith(
                                     "scheduled message"
                                   ) && (
                                     <span className="absolute -top-3 -left-2 text-base">
@@ -382,7 +445,7 @@ export default function Chat() {
                                   )}
                                   <MemoizedMarkdown
                                     id={`${m.id}-${i}`}
-                                    content={part.text.replace(
+                                    content={cleanText.replace(
                                       /^scheduled message: /,
                                       ""
                                     )}
@@ -447,6 +510,20 @@ export default function Chat() {
               </div>
             );
           })}
+          {(status === "submitted" || status === "streaming") && (
+            <div className="flex justify-start">
+              <div className="flex gap-2 max-w-[85%]">
+                <Avatar username={"J"} className="shrink-0" />
+                <Card className="p-3 rounded-md rounded-bl-none bg-neutral-100 dark:bg-neutral-900 border-l-2 border-l-[#0EA5E9]">
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-[#0EA5E9] rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                    <div className="w-2 h-2 bg-[#0EA5E9] rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                    <div className="w-2 h-2 bg-[#0EA5E9] rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+                  </div>
+                </Card>
+              </div>
+            </div>
+          )}
           <div ref={messagesEndRef} />
         </div>
 
@@ -468,9 +545,9 @@ export default function Chat() {
               <Textarea
                 disabled={pendingToolCallConfirmation}
                 placeholder={
-                  pendingToolCallConfirmation
-                    ? "Please respond to the tool confirmation above..."
-                    : "Send a message..."
+                pendingToolCallConfirmation
+                  ? "Please respond to the tool confirmation above..."
+                  : "Ask Jarvis anything..."
                 }
                 className="flex w-full border border-neutral-200 dark:border-neutral-700 px-3 py-2  ring-offset-background placeholder:text-neutral-500 dark:placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl text-base! pb-10 dark:bg-neutral-900"
                 value={agentInput}
@@ -502,7 +579,7 @@ export default function Chat() {
                   disabled={isTranscribing}
                   className={`inline-flex items-center cursor-pointer justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 rounded-full p-1.5 h-fit border ${
                     isRecording 
-                      ? "bg-red-500 text-white border-red-600 animate-pulse" 
+                      ? "bg-[#0EA5E9] text-white border-[#0EA5E9] animate-pulse" 
                       : "bg-primary text-primary-foreground hover:bg-primary/90 border-neutral-200 dark:border-neutral-800"
                   }`}
                   aria-label={isRecording ? "Stop recording" : "Start voice input"}

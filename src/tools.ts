@@ -14,8 +14,8 @@ import { scheduleSchema } from "agents/schedule";
  * When invoked, this will present a confirmation dialog to the user
  */
 const getWeatherInformation = tool({
-  description: "show the weather in a given city to the user",
-  inputSchema: z.object({ city: z.string() })
+  description: "Get the current weather for a city. ONLY use when user explicitly asks about weather.",
+  inputSchema: z.object({ city: z.string().describe("The city name to get weather for") })
   // Omitting execute function makes this tool require human confirmation
 });
 
@@ -25,16 +25,17 @@ const getWeatherInformation = tool({
  * This is suitable for low-risk operations that don't need oversight
  */
 const getLocalTime = tool({
-  description: "get the local time for a specified location",
-  inputSchema: z.object({ location: z.string() }),
+  description: "Get the current local time in a location. ONLY use when user asks what time it is somewhere.",
+  inputSchema: z.object({ location: z.string().describe("The location to get time for") }),
   execute: async ({ location }) => {
     console.log(`Getting local time for ${location}`);
-    return "10am";
+    const now = new Date();
+    return `The current time in ${location} is approximately ${now.toLocaleTimeString()}`;
   }
 });
 
 const scheduleTask = tool({
-  description: "A tool to schedule a task to be executed at a later time",
+  description: "Schedule a reminder or task for the future. ONLY use when user says 'remind me', 'schedule', or 'in X minutes/hours'.",
   inputSchema: scheduleSchema,
   execute: async ({ when, description }) => {
     // we can now read the agent context from the ALS store
@@ -69,7 +70,7 @@ const scheduleTask = tool({
  * This executes automatically without requiring human confirmation
  */
 const getScheduledTasks = tool({
-  description: "List all tasks that have been scheduled",
+  description: "List all pending reminders and scheduled tasks. ONLY use when user asks to see their tasks or reminders.",
   inputSchema: z.object({}),
   execute: async () => {
     const { agent } = getCurrentAgent<Chat>();
@@ -79,7 +80,7 @@ const getScheduledTasks = tool({
       if (!tasks || tasks.length === 0) {
         return "No scheduled tasks found.";
       }
-      return tasks;
+      return `You have ${tasks.length} scheduled task(s): ${JSON.stringify(tasks)}`;
     } catch (error) {
       console.error("Error listing scheduled tasks", error);
       return `Error listing scheduled tasks: ${error}`;
@@ -92,7 +93,7 @@ const getScheduledTasks = tool({
  * This executes automatically without requiring human confirmation
  */
 const cancelScheduledTask = tool({
-  description: "Cancel a scheduled task using its ID",
+  description: "Cancel a scheduled reminder or task. ONLY use when user explicitly asks to cancel a task.",
   inputSchema: z.object({
     taskId: z.string().describe("The ID of the task to cancel")
   }),
@@ -100,10 +101,10 @@ const cancelScheduledTask = tool({
     const { agent } = getCurrentAgent<Chat>();
     try {
       await agent!.cancelSchedule(taskId);
-      return `Task ${taskId} has been successfully canceled.`;
+      return `Done! I've canceled that task.`;
     } catch (error) {
       console.error("Error canceling scheduled task", error);
-      return `Error canceling task ${taskId}: ${error}`;
+      return `Sorry, I couldn't cancel that task: ${error}`;
     }
   }
 });
