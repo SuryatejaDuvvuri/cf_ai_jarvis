@@ -180,7 +180,7 @@ ${getSchedulePrompt({ date: new Date() })}
 
           messages: await convertToModelMessages(processedMessages),
           model,
-          // tools: allTools,
+          tools: allTools,
           toolChoice: "auto",
           // Type boundary: streamText expects specific tool types, but base class uses ToolSet
           // This is safe because our tools satisfy ToolSet interface (verified by 'satisfies' in tools.ts)

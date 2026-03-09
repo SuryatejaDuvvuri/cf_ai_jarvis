@@ -15,7 +15,7 @@ import { scheduleSchema } from "agents/schedule";
  */
 const getWeatherInformation = tool({
   description:
-    "Get the current weather for a city. ONLY use when user explicitly asks about weather.",
+    "Get the current weather for a city. ONLY call this tool if the user's message contains the words 'weather' AND a city name. Do NOT call for any other reason.",
   inputSchema: z.object({
     city: z.string().describe("The city name to get weather for")
   })
@@ -29,7 +29,7 @@ const getWeatherInformation = tool({
  */
 const getLocalTime = tool({
   description:
-    "Get the current local time in a location. ONLY use when user asks what time it is somewhere.",
+    "Get the current local time in a location. ONLY call this tool if the user's message explicitly asks 'what time is it in [place]'. Do NOT call for any other reason.",
   inputSchema: z.object({
     location: z.string().describe("The location to get time for")
   }),
@@ -42,7 +42,7 @@ const getLocalTime = tool({
 
 const scheduleTask = tool({
   description:
-    "Schedule a reminder or task for the future. ONLY use when user says 'remind me', 'schedule', or 'in X minutes/hours'.",
+    "Schedule a reminder or task for the future. ONLY call this tool if the user's message contains 'remind me', 'schedule', 'set a reminder', or 'in X minutes/hours'. Do NOT call for any other reason.",
   inputSchema: scheduleSchema,
   execute: async ({ when, description }) => {
     // we can now read the agent context from the ALS store
@@ -78,7 +78,7 @@ const scheduleTask = tool({
  */
 const getScheduledTasks = tool({
   description:
-    "List all pending reminders and scheduled tasks. ONLY use when user asks to see their tasks or reminders.",
+    "List all pending reminders and scheduled tasks. ONLY call this tool if the user's message explicitly asks to see tasks or reminders. Do NOT call for any other reason.",
   inputSchema: z.object({}),
   execute: async () => {
     const { agent } = getCurrentAgent<Chat>();
@@ -102,7 +102,7 @@ const getScheduledTasks = tool({
  */
 const cancelScheduledTask = tool({
   description:
-    "Cancel a scheduled reminder or task. ONLY use when user explicitly asks to cancel a task.",
+    "Cancel a scheduled reminder or task. ONLY call this tool if the user's message explicitly says to cancel a specific task. Do NOT call for any other reason.",
   inputSchema: z.object({
     taskId: z.string().describe("The ID of the task to cancel")
   }),
