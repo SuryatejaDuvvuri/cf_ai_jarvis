@@ -78,7 +78,8 @@ export default function Chat() {
   };
 
   const agent = useAgent({
-    agent: "chat"
+    agent: "chat",
+    name: "Surya"
   });
 
   const [agentInput, setAgentInput] = useState("");
@@ -210,7 +211,10 @@ export default function Chat() {
   };
   const speakResponse = useCallback(async (text: string) => {
     try {
-      const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, "").trim();
+      const cleanText = text
+        .replace(/\[MEMORY:[^\]]+\]/g, "")
+        .replace(/.*\{"type":\s*"function"[^}]*"parameters":\s*\{[^}]*\}\}.*/g, "")
+        .trim();
       console.log("Clean text to send:", cleanText);
       if (!cleanText) {
         console.log("Text is empty, skipping TTS");
@@ -405,6 +409,7 @@ export default function Chat() {
                           if (part.type === "text") {
                             const cleanText = part.text
                               .replace(/\[MEMORY:[^\]]+\]/g, "")
+                              .replace(/.*\{"type":\s*"function"[^}]*"parameters":\s*\{[^}]*\}\}.*/g, "")
                               .trim();
                             return (
                               // biome-ignore lint/suspicious/noArrayIndexKey: immutable index

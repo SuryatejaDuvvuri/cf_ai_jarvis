@@ -98,13 +98,32 @@ export class Chat extends AIChatAgent<Env> {
       execute: async ({ writer }) => {
         // Clean up incomplete tool calls to prevent API errors
         const cleanedMessages = cleanupMessages(this.messages);
+        const toolPatterns = [
+          /what'?s the weather/,
+          /how'?s the weather/,
+          /weather in \w+/,
+          /remind me .+ in \d+/,
+          /set a reminder/,
+          /schedule .+/,
+          /what time is it in/,
+          /show my (tasks|reminders)/,
+          /what are my (tasks|reminders)/,
+          /cancel .*(task|reminder)/,
+        ];
+        const lastUserMsg = cleanedMessages
+        .filter((m: any) => m.role === "user")
+        .pop();
+        const lastText = (lastUserMsg?.parts
+        ?.find((p: any) => p.type === "text") as any)
+        ?.text?.toLowerCase() || "";
+        const shouldUseTool = toolPatterns.some((pattern) => pattern.test(lastText));
 
         // Process any pending tool calls from previous messages
         // This handles human-in-the-loop confirmations for tools
         const processedMessages = await processToolCalls({
           messages: cleanedMessages,
           dataStream: writer,
-          tools: allTools,
+          tools: shouldUseTool ? allTools : ({} as ToolSet),
           executions
         });
 
@@ -180,24 +199,57 @@ ${getSchedulePrompt({ date: new Date() })}
 
           messages: await convertToModelMessages(processedMessages),
           model,
-          tools: allTools,
-          toolChoice: "auto",
+          tools: shouldUseTool ? allTools : undefined,
+          toolChoice: shouldUseTool ? "auto" : undefined,
           // Type boundary: streamText expects specific tool types, but base class uses ToolSet
           // This is safe because our tools satisfy ToolSet interface (verified by 'satisfies' in tools.ts)
           // onFinish: onFinish as unknown as StreamTextOnFinishCallback<
           //   typeof allTools
           // >,
           onFinish: async (result) => {
-            const text = result.text;
-            const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;
-            const matches = text.matchAll(memoryRegex);
+            let text = result.text;
 
-            for (const match of matches) {
+            const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;
+            const memoryMatches = text.matchAll(memoryRegex);
+            for (const match of memoryMatches) 
+            {
               const key = match[1].trim();
               const value = match[2].trim();
               await this.saveMemory(key, value);
               console.log(`Saved memory: ${key} = ${value}`);
             }
+
+            // Handle raw JSON tool calls that Llama 3 outputs as text
+            const toolCallRegex = /\{"type":\s*"function",\s*"name":\s*"(\w+)",\s*"parameters":\s*(\{[^}]*\})\}/;
+            const toolMatch = text.match(toolCallRegex);
+            if (toolMatch) {
+              const toolName = toolMatch[1];
+              const toolParams = JSON.parse(toolMatch[2]);
+              console.log(`Detected raw tool call: ${toolName}`, toolParams);
+
+              // Check executions first (confirmation-required tools)
+              if (toolName in executions) {
+                const toolResult = await (executions as any)[toolName](toolParams);
+                console.log(`Tool ${toolName} result:`, toolResult);
+                // Replace the raw JSON with the tool result in the response
+                text = text.replace(toolMatch[0], toolResult);
+              }
+              // Check tools with execute functions
+              else if (toolName in tools) {
+                const toolDef = (tools as any)[toolName];
+                if (toolDef.execute) {
+                  try {
+                    const toolResult = await toolDef.execute(toolParams);
+                    console.log(`Tool ${toolName} result:`, toolResult);
+                    text = text.replace(toolMatch[0], toolResult);
+                  } catch (err) {
+                    console.error(`Tool ${toolName} error:`, err);
+                    text = text.replace(toolMatch[0], `Sorry, I couldn't complete that action.`);
+                  }
+                }
+              }
+            }
+
             // biome-ignore lint/suspicious/noExplicitAny: Type mismatch with SDK callback
             (onFinish as any)(result);
           },
