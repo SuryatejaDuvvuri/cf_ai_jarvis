@@ -1,0 +1,19 @@
+# CODEOWNERS - Define who reviews what
+# https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+
+# Default owners for everything in the repo
+* @your-github-username
+
+# Package-specific owners (uncomment and customize when team grows)
+# /packages/agents/ @agents-team
+# /packages/core/ @core-team
+# /packages/frontend/ @frontend-team
+# /packages/worker/ @infra-team
+
+# CI/CD and infrastructure
+/.github/ @your-github-username
+/packages/worker/wrangler*.jsonc @your-github-username
+
+# Documentation
+/docs/ @your-github-username
+*.md @your-github-username

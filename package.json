@@ -1,18 +1,33 @@
 {
-  "name": "cloudflare-agent-starter",
-  "version": "1.0.0",
-  "description": "",
+  "name": "panelai",
+  "version": "0.0.0",
+  "description": "Multi-agent AI panel interview platform",
   "type": "module",
   "private": true,
+  "packageManager": "npm@9.7.2",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "dev": "vite dev",
-    "start": "vite dev",
-    "deploy": "vite build && wrangler deploy",
-    "test": "vitest",
-    "types": "wrangler types env.d.ts --include-runtime false",
+    "dev": "turbo run dev --filter=@panelai/worker",
+    "start": "turbo run dev --filter=@panelai/worker",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "check": "turbo run check",
     "format": "prettier --write .",
-    "check": "prettier . --check && biome lint && tsc",
-    "postinstall": "patch-package"
+    "deploy:staging": "cd packages/worker && npx wrangler deploy --config wrangler.staging.jsonc",
+    "deploy:prod": "cd packages/worker && npx wrangler deploy --config wrangler.production.jsonc",
+    "postinstall": "patch-package",
+    "prepare": "husky"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "prettier --write",
+      "biome lint --write"
+    ],
+    "*.{js,jsx,json,md,css}": [
+      "prettier --write"
+    ]
   },
   "keywords": [
     "cloudflare",
@@ -23,17 +38,24 @@
   "license": "MIT",
   "devDependencies": {
     "@biomejs/biome": "^2.3.10",
+    "@changesets/changelog-github": "^0.6.0",
+    "@changesets/cli": "^2.30.0",
     "@cloudflare/vite-plugin": "^1.21.2",
     "@cloudflare/vitest-pool-workers": "^0.12.6",
     "@cloudflare/workers-types": "^4.20251231.0",
+    "@commitlint/cli": "^20.5.0",
+    "@commitlint/config-conventional": "^20.5.0",
     "@tailwindcss/vite": "^4.1.18",
     "@types/node": "^25.0.10",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "patch-package": "^8.0.1",
     "prettier": "^3.7.4",
     "tailwindcss": "^4.1.18",
+    "turbo": "^2.9.3",
     "typescript": "^5.9.3",
     "vite": "^7.3.0",
     "vitest": "3.2.4",

@@ -1,0 +1,20 @@
+{
+  "name": "@panelai/frontend",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "main": "./src/app.tsx",
+  "types": "./src/app.tsx",
+  "scripts": {
+    "check": "tsc --noEmit",
+    "test": "echo 'No tests yet'"
+  },
+  "dependencies": {
+    "@panelai/shared": "*"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3"
+  }
+}

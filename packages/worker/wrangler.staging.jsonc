@@ -1,0 +1,35 @@
+/**
+ * Wrangler configuration for STAGING environment
+ * Deploy with: npm run deploy:staging
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "panelai-staging",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-12-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  "assets": {
+    "directory": "public"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "Chat",
+        "class_name": "Chat"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Chat"]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  }
+}

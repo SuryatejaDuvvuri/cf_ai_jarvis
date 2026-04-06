@@ -1,0 +1,39 @@
+/**
+ * Wrangler configuration for PRODUCTION environment
+ * Deploy with: npm run deploy:prod
+ * Note: Production deploys require manual approval in GitHub Actions
+ */
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "panelai",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-12-17",
+  "compatibility_flags": ["nodejs_compat"],
+  "ai": {
+    "binding": "AI",
+    "remote": true
+  },
+  "assets": {
+    "directory": "public"
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "Chat",
+        "class_name": "Chat"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["Chat"]
+    }
+  ],
+  "observability": {
+    "enabled": true
+  },
+  "placement": {
+    "mode": "smart"
+  }
+}
