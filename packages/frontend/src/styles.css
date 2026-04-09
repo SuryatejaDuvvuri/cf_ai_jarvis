@@ -1,5 +1,32 @@
 @import "tailwindcss";
+@source "./**/*.{ts,tsx}";
 @source "../node_modules/streamdown/dist/index.js";
+
+body {
+  background:
+    radial-gradient(
+      circle at 15% 10%,
+      rgba(14, 165, 233, 0.18),
+      transparent 35%
+    ),
+    radial-gradient(
+      circle at 85% 0%,
+      rgba(56, 189, 248, 0.15),
+      transparent 30%
+    ),
+    linear-gradient(135deg, #020617 0%, #0b1120 45%, #020617 100%);
+}
+
+#app {
+  color: #e6f7ff;
+}
+
+.markdown-body,
+.markdown-body p,
+.markdown-body li,
+.markdown-body strong {
+  color: #e6f7ff;
+}
 
 /* Markdown Table Styling (Tailwind @apply) */
 .markdown-body table {

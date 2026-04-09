@@ -1,18 +1,11 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "rootDir": ".",
     "types": ["@cloudflare/workers-types", "node", "vite/client"],
     "paths": {
       "@/*": ["../frontend/src/*"]
     }
   },
-  "include": [
-    "src",
-    "../shared/src",
-    "../core/src",
-    "../agents/src",
-    "../frontend/src"
-  ],
+  "include": ["env.d.ts", "src"],
   "exclude": ["__tests__"]
 }

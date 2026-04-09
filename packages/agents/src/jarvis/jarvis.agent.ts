@@ -1,6 +1,6 @@
 import type { Schedule } from "agents";
-import { getSchedulePrompt } from "agents/schedule";
 import { AIChatAgent } from "@cloudflare/ai-chat";
+import { createOpenAI } from "@ai-sdk/openai";
 import { createWorkersAI } from "workers-ai-provider";
 import {
   generateId,
@@ -9,10 +9,19 @@ import {
   createUIMessageStream,
   convertToModelMessages,
   createUIMessageStreamResponse,
+  type UIMessage,
   type ToolSet
 } from "ai";
 import { processToolCalls, cleanupMessages } from "@panelai/shared";
 import { tools, executions } from "./jarvis.tools.js";
+
+interface JarvisEnv extends Cloudflare.Env {
+  AI: Ai;
+  AI_PROVIDER?: "workers-ai" | "openai-compatible";
+  AI_MODEL?: string;
+  AI_BASE_URL?: string;
+  AI_API_KEY?: string;
+}
 
 interface Memory {
   id: number;
@@ -24,7 +33,28 @@ interface Memory {
 /**
  * Chat Agent implementation that handles real-time AI chat interactions
  */
-export class Chat extends AIChatAgent<Env> {
+export class Chat extends AIChatAgent<JarvisEnv> {
+  private resolveModel() {
+    const provider = this.env.AI_PROVIDER ?? "workers-ai";
+    const modelName =
+      this.env.AI_MODEL ?? "@cf/meta/llama-3.3-70b-instruct-fp8-fast";
+
+    if (provider === "openai-compatible") {
+      const apiKey = this.env.AI_API_KEY;
+      const baseURL = this.env.AI_BASE_URL;
+      if (!apiKey || !baseURL) {
+        throw new Error(
+          "AI_PROVIDER=openai-compatible requires AI_API_KEY and AI_BASE_URL."
+        );
+      }
+      const openai = createOpenAI({ apiKey, baseURL });
+      return openai(modelName);
+    }
+
+    const workersAI = createWorkersAI({ binding: this.env.AI });
+    return workersAI(modelName as unknown as Parameters<typeof workersAI>[0]);
+  }
+
   private async initMemory() {
     this.sql`
       CREATE TABLE IF NOT EXISTS memories (
@@ -59,12 +89,7 @@ export class Chat extends AIChatAgent<Env> {
     onFinish: StreamTextOnFinishCallback<ToolSet>,
     options?: { abortSignal?: AbortSignal }
   ) {
-    const workersAI = createWorkersAI({ binding: this.env.AI });
-    const model = workersAI(
-      "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as unknown as Parameters<
-        typeof workersAI
-      >[0]
-    );
+    const model = this.resolveModel();
 
     const memories = await this.getMemories();
     const memoryContext =
@@ -78,34 +103,26 @@ export class Chat extends AIChatAgent<Env> {
     } catch (_e) {}
 
     // Collect all tools, including MCP tools
-    const allTools = {
+    const allTools: ToolSet = {
       ...tools,
-      ...mcpTools
+      ...(mcpTools as ToolSet)
     };
 
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
         // Clean up incomplete tool calls to prevent API errors
         const cleanedMessages = cleanupMessages(this.messages);
-        const toolPatterns = [
-          /what'?s the weather/,
-          /how'?s the weather/,
-          /weather in \w+/,
-          /remind me .+ in \d+/,
-          /set a reminder/,
-          /schedule .+/,
-          /what time is it in/,
-          /show my (tasks|reminders)/,
-          /what are my (tasks|reminders)/,
-          /cancel .*(task|reminder)/
-        ];
+        const toolPatterns: RegExp[] = [];
         const lastUserMsg = cleanedMessages
-          .filter((m: any) => m.role === "user")
+          .filter((message: UIMessage) => message.role === "user")
           .pop();
+        const lastTextPart = lastUserMsg?.parts?.find(
+          (part) => part.type === "text"
+        );
         const lastText =
-          (
-            lastUserMsg?.parts?.find((p: any) => p.type === "text") as any
-          )?.text?.toLowerCase() || "";
+          lastTextPart && "text" in lastTextPart
+            ? lastTextPart.text.toLowerCase()
+            : "";
         const shouldUseTool = toolPatterns.some((pattern) =>
           pattern.test(lastText)
         );
@@ -119,73 +136,26 @@ export class Chat extends AIChatAgent<Env> {
         });
 
         const result = streamText({
-          system: `You are Jarvis, a personal AI assistant. You are helpful, conversational with a good sense of humor and efficient. You don't waste words.
+          system: `You are PanelAI interview simulation backend.
 
-          CRITICAL INSTRUCTION - READ THIS FIRST:
-          Before responding, ask yourself: "Did the user EXPLICITLY ask me to do something that requires a tool?"
+Role constraints:
+- You are NOT a personal assistant.
+- Do NOT provide reminders, weather, scheduling, or productivity help.
+- Keep all responses strictly within hiring interview simulation context.
+- You represent a panel of agents: orchestrator (moderator), recruiter, technical, culture, and domain expert.
 
-          Examples of when NOT to use tools:
-          - "Hello" → Just say hello back. NO TOOLS.
-          - "Hi Jarvis" → Greet them warmly. NO TOOLS.
-          - "How are you?" → Reply conversationally. NO TOOLS.
-          - "What can you do?" → Explain your capabilities. NO TOOLS.
-          - "Thanks" → You're welcome. NO TOOLS.
+Behavior rules:
+- Ask concise interview questions and short follow-ups.
+- If user asks unrelated assistant requests, redirect back to interview context.
+- Keep tone professional and neutral.
+- Do not use any tools.
 
-          Examples of when TO use tools:
-          - "Remind me to call mom in 5 minutes" → Use scheduleTask
-          - "What's the weather in Tokyo?" → Use getWeatherInformation  
-          - "What time is it in London?" → Use getLocalTime
-          - "Show my reminders" → Use getScheduledTasks
-          - "Cancel that reminder" → Use cancelScheduledTask
+Output style:
+- 1-3 short paragraphs max.
+- If asking a question, ask one clear question at a time.
 
-          If the answer is NO, just respond conversationally. DO NOT use any tools.
-          Your personality:
-            - You address the user as "sir" or by their name once you know it
-            - Warm, American butler vibes, but modern and professional who's also a friend
-            - Direct and useful, not sycophantic
-            - You're genuinely interested in helping, not just completing tasks
-            - You remember context and build on previous conversations
-            - You refer to the user by name once you know it
-
-          Greeting style examples:
-            - "Good evening, sir. What shall we tackle today?"
-            - "Welcome back, sir. What's on the agenda?"
-            - "Hello, sir. Ready to get to work?"
-            - After learning their name: "Good to see you [name]. What do we have today?"
-
-          You have access to these capabilities:
-          - Task scheduling and reminders
-          - General knowledge and conversation
-          - Weather information (requires confirmation)
-
-          ${memoryContext}
-
-          MEMORY INSTRUCTIONS:
-          When the user tells you personal information (their name, preferences, job, interests, etc.), you should remember it.
-          To save a memory, include this EXACT format somewhere in your response:
-          [MEMORY: key=value]
-
-          Examples:
-          - User says "My name is John" → Include [MEMORY: name=John] in your response
-          - User says "I work at Google" → Include [MEMORY: job=Works at Google]
-          - User says "I prefer morning meetings" → Include [MEMORY: preference=Prefers morning meetings]
-          - User says "I'm working on a React project" → Include [MEMORY: current_project=React project]
-
-          Only save important, persistent facts. Don't save temporary things like "user said hello".
-
-          TOOL USAGE RULES - VERY IMPORTANT:
-          - You have access to tools, but you must be VERY selective about using them.
-
-         ONLY use tools when the user EXPLICITLY requests:
-          - scheduleTask: ONLY when user says "remind me", "schedule", "set a reminder", "in X minutes/hours"
-          - getWeatherInformation: ONLY when user asks "what's the weather", "how's the weather"
-          - getLocalTime: ONLY when user asks "what time is it in [location]"
-          - getScheduledTasks: ONLY when user asks "what are my tasks", "show my reminders"
-          - cancelScheduledTask: ONLY when user asks to "cancel" a specific task
-
-          If in doubt, DO NOT use a tool. Just respond conversationally.
-
-${getSchedulePrompt({ date: new Date() })}
+Context:
+${memoryContext}
 `,
 
           messages: await convertToModelMessages(processedMessages),
@@ -214,21 +184,31 @@ ${getSchedulePrompt({ date: new Date() })}
               console.log(`Detected raw tool call: ${toolName}`, toolParams);
 
               // Check executions first (confirmation-required tools)
-              if (toolName in executions) {
-                const toolResult = await (executions as any)[toolName](
-                  toolParams
+              const executionHandlers = executions;
+              if (toolName in executionHandlers) {
+                const handler =
+                  executionHandlers[toolName as keyof typeof executionHandlers];
+                const toolResult = await handler(
+                  toolParams as Parameters<typeof handler>[0]
                 );
                 console.log(`Tool ${toolName} result:`, toolResult);
-                text = text.replace(toolMatch[0], toolResult);
+                text = text.replace(toolMatch[0], String(toolResult));
               }
               // Check tools with execute functions
-              else if (toolName in tools) {
-                const toolDef = (tools as any)[toolName];
-                if (toolDef.execute) {
+              else if (toolName in allTools) {
+                const toolDef = allTools[toolName as keyof ToolSet];
+                if (toolDef && "execute" in toolDef && toolDef.execute) {
                   try {
-                    const toolResult = await toolDef.execute(toolParams);
+                    const toolResult = await toolDef.execute(
+                      toolParams as never,
+                      {
+                        messages:
+                          await convertToModelMessages(processedMessages),
+                        toolCallId: generateId()
+                      }
+                    );
                     console.log(`Tool ${toolName} result:`, toolResult);
-                    text = text.replace(toolMatch[0], toolResult);
+                    text = text.replace(toolMatch[0], String(toolResult));
                   } catch (err) {
                     console.error(`Tool ${toolName} error:`, err);
                     text = text.replace(

@@ -10,7 +10,5 @@
 export * from "./constants/index.js";
 export * from "./utils/index.js";
 
-// Types will be exported here as they're created
-// export type { AgentCard } from "./types/agent-card.js";
-// export type { Task, TaskState } from "./types/task.js";
-// export type { InterviewSession, Score } from "./types/interview.js";
+// Re-export all types
+export * from "./types/index.js";

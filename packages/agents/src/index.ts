@@ -8,9 +8,8 @@
 // Export Jarvis (the original voice assistant, now an agent)
 export { Chat } from "./jarvis/jarvis.agent.js";
 
-// Future agents will be exported here:
-// export { Orchestrator } from "./orchestrator/orchestrator.agent.js";
-// export { Recruiter } from "./recruiter/recruiter.agent.js";
-// export { TechnicalInterviewer } from "./technical/technical.agent.js";
-// export { CultureInterviewer } from "./culture/culture.agent.js";
-// export { DomainExpert } from "./domain-expert/domain-expert.agent.js";
+export { OrchestratorAgent } from "./orchestrator/orchestrator.agent.js";
+export { RecruiterAgent } from "./recruiter/recruiter.agent.js";
+export { TechnicalInterviewerAgent } from "./technical/technical.agent.js";
+export { CultureInterviewerAgent } from "./culture/culture.agent.js";
+export { DomainExpertAgent } from "./domain-expert/domain-expert.agent.js";
