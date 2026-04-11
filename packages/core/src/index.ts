@@ -5,10 +5,16 @@
  * memory system, and shared tools. Other packages build on top of this.
  */
 
-// Will export as they're created in Phase 1:
-// export { CoreAgent } from "./base-agent.js";
-// export { AgentCardRegistry } from "./a2a/agent-card.js";
-// export { TaskManager } from "./a2a/task-manager.js";
-// export { delegateToAgent } from "./a2a/delegation.js";
-// export { PrivateMemory } from "./memory/private-memory.js";
-// export { SharedMemory } from "./memory/shared-memory.js";
+// Base agent class
+export {
+  CoreAgent,
+  type CoreAgentEnv,
+  type AgentNotification,
+  type DelegationMessage
+} from "./base-agent.js";
+
+// A2A protocol
+export * from "./a2a/index.js";
+
+// Memory system
+export * from "./memory/index.js";

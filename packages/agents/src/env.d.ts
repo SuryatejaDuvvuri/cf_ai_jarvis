@@ -4,7 +4,10 @@
  * with DurableObjectNamespace bindings is in @panelai/worker.
  */
 interface Env {
-  OPENAI_API_KEY: string;
   AI: Ai;
+  AI_PROVIDER?: "workers-ai" | "openai-compatible";
+  AI_MODEL?: string;
+  AI_BASE_URL?: string;
+  AI_API_KEY?: string;
   Chat: DurableObjectNamespace;
 }

@@ -20,6 +20,30 @@
       {
         "name": "Chat",
         "class_name": "Chat"
+      },
+      {
+        "name": "ORCHESTRATOR",
+        "class_name": "OrchestratorAgent"
+      },
+      {
+        "name": "RECRUITER",
+        "class_name": "RecruiterAgent"
+      },
+      {
+        "name": "TECHNICAL_INTERVIEWER",
+        "class_name": "TechnicalInterviewerAgent"
+      },
+      {
+        "name": "CULTURE_INTERVIEWER",
+        "class_name": "CultureInterviewerAgent"
+      },
+      {
+        "name": "DOMAIN_EXPERT",
+        "class_name": "DomainExpertAgent"
+      },
+      {
+        "name": "SharedMemory",
+        "class_name": "SharedMemoryDO"
       }
     ]
   },
@@ -27,10 +51,28 @@
     {
       "tag": "v1",
       "new_sqlite_classes": ["Chat"]
+    },
+    {
+      "tag": "v2",
+      "new_sqlite_classes": [
+        "OrchestratorAgent",
+        "RecruiterAgent",
+        "TechnicalInterviewerAgent",
+        "CultureInterviewerAgent",
+        "DomainExpertAgent",
+        "SharedMemoryDO"
+      ]
     }
   ],
   "observability": {
     "enabled": true
+  },
+  "vars": {
+    "GREENHOUSE_API_KEY": "",
+    "AI_PROVIDER": "workers-ai",
+    "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "AI_BASE_URL": "",
+    "AI_API_KEY": ""
   }
   /**
    * Smart Placement
