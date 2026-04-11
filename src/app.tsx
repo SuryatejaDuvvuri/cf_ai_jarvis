@@ -4,686 +4,767 @@ import { useAgent } from "agents/react";
 import { isStaticToolUIPart } from "ai";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
 import type { UIMessage } from "@ai-sdk/react";
-import type { tools } from "./tools";
 
-// Component imports
-import { Button } from "@/components/button/Button";
-import { Card } from "@/components/card/Card";
-import { Avatar } from "@/components/avatar/Avatar";
-import { Toggle } from "@/components/toggle/Toggle";
-import { Textarea } from "@/components/textarea/Textarea";
 import { MemoizedMarkdown } from "@/components/memoized-markdown";
 import { ToolInvocationCard } from "@/components/tool-invocation-card/ToolInvocationCard";
 
-// Icon imports
 import {
-  BugIcon,
-  MoonIcon,
-  RobotIcon,
-  SunIcon,
-  TrashIcon,
+  MicrophoneIcon,
   PaperPlaneTiltIcon,
   StopIcon,
-  MicrophoneIcon
+  CheckCircleIcon,
+  ClockIcon,
+  CaretRightIcon,
+  SunIcon,
+  MoonIcon,
+  TrashIcon,
+  BriefcaseIcon,
+  CodeIcon,
+  HeartIcon,
+  StarIcon,
+  UserIcon,
+  CrownSimpleIcon
 } from "@phosphor-icons/react";
-// import { text } from "node:stream/consumers";
 
-// List of tools that require human confirmation
-// NOTE: this should match the tools that don't have execute functions in tools.ts
-const toolsRequiringConfirmation: (keyof typeof tools)[] = [
-  "getWeatherInformation"
+// ─── Agent roster ─────────────────────────────────────────────────────────────
+
+type AgentStatus = "waiting" | "active" | "done" | "moderating";
+
+type Agent = {
+  id: string;
+  name: string;
+  role: string;
+  initials: string;
+  color: string;
+  voice: string;
+  icon: React.ReactNode;
+  description: string;
+};
+
+const AGENTS: Agent[] = [
+  {
+    id: "orchestrator",
+    name: "Alex Monroe",
+    role: "Interview Orchestrator",
+    initials: "AM",
+    color: "#8B5CF6",
+    voice: "orion",
+    icon: <CrownSimpleIcon size={12} weight="fill" />,
+    description: "Manages the panel, ensures smooth flow"
+  },
+  {
+    id: "recruiter",
+    name: "Sarah Park",
+    role: "HR & Recruiter",
+    initials: "SP",
+    color: "#3B82F6",
+    voice: "asteria",
+    icon: <BriefcaseIcon size={12} weight="fill" />,
+    description: "Evaluates fit, logistics & compensation"
+  },
+  {
+    id: "technical",
+    name: "Dr. Raj Patel",
+    role: "Technical Interviewer",
+    initials: "RP",
+    color: "#06B6D4",
+    voice: "arcas",
+    icon: <CodeIcon size={12} weight="fill" />,
+    description: "Assesses technical skills & problem solving"
+  },
+  {
+    id: "culture",
+    name: "Maya Chen",
+    role: "Culture & Values",
+    initials: "MC",
+    color: "#10B981",
+    voice: "luna",
+    icon: <HeartIcon size={12} weight="fill" />,
+    description: "Evaluates team fit & company values"
+  },
+  {
+    id: "domain",
+    name: "James Liu",
+    role: "Domain Expert",
+    initials: "JL",
+    color: "#F59E0B",
+    voice: "helios",
+    icon: <StarIcon size={12} weight="fill" />,
+    description: "Deep dives into domain knowledge"
+  },
+  {
+    id: "behavioral",
+    name: "Lisa Torres",
+    role: "Behavioral Analyst",
+    initials: "LT",
+    color: "#EC4899",
+    voice: "stella",
+    icon: <UserIcon size={12} weight="fill" />,
+    description: "STAR-based behavioral assessment"
+  }
 ];
 
-export default function Chat() {
-  const [theme, setTheme] = useState<"dark" | "light">(() => {
-    // Check localStorage first, default to dark if not found
-    const savedTheme = localStorage.getItem("theme");
-    return (savedTheme as "dark" | "light") || "dark";
+const STAGES = [
+  { agentId: "orchestrator", label: "Welcome" },
+  { agentId: "recruiter",    label: "HR Screen" },
+  { agentId: "technical",    label: "Technical" },
+  { agentId: "culture",      label: "Culture Fit" },
+  { agentId: "domain",       label: "Domain" },
+  { agentId: "behavioral",   label: "Behavioral" },
+  { agentId: "orchestrator", label: "Closing" }
+];
+
+const TOOLS_REQUIRING_CONFIRMATION = ["getWeatherInformation"];
+
+function agentById(id: string) {
+  return AGENTS.find((a) => a.id === id) ?? AGENTS[0];
+}
+
+function fmtTime(d: Date) {
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export default function PanelInterview() {
+  const [theme, setTheme] = useState<"dark" | "light">(() =>
+    (localStorage.getItem("theme") as "dark" | "light") || "dark"
+  );
+  const [stageIndex, setStageIndex] = useState(0);
+  const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({
+    orchestrator: "moderating",
+    recruiter: "waiting",
+    technical: "waiting",
+    culture: "waiting",
+    domain: "waiting",
+    behavioral: "waiting"
   });
-  const [showDebug, setShowDebug] = useState(false);
   const [isRecording, setRecording] = useState(false);
-  const isRecordingRef = useRef(false);
   const [isTranscribing, setTranscribing] = useState(false);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const audioChunks = useRef<Blob[]>([]);
-  const [textareaHeight, setTextareaHeight] = useState("auto");
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const [input, setInput] = useState("");
+
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+    document.documentElement.classList.toggle("light", theme !== "dark");
+    localStorage.setItem("theme", theme);
+  }, [theme]);
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, []);
 
-  useEffect(() => {
-    // Apply theme class on mount and when theme changes
-    if (theme === "dark") {
-      document.documentElement.classList.add("dark");
-      document.documentElement.classList.remove("light");
-    } else {
-      document.documentElement.classList.remove("dark");
-      document.documentElement.classList.add("light");
-    }
+  const agent = useAgent({ agent: "chat", name: "candidate" });
+  const { messages, addToolResult, clearHistory, status, sendMessage, stop } =
+    useAgentChat<unknown, UIMessage<{ createdAt: string }>>({ agent });
 
-    // Save theme preference to localStorage
-    localStorage.setItem("theme", theme);
-  }, [theme]);
+  const currentAgent = agentById(STAGES[stageIndex].agentId);
+  const isLastStage = stageIndex === STAGES.length - 1;
+  const progressPct = Math.round((stageIndex / (STAGES.length - 1)) * 100);
 
-  // Scroll to bottom on mount
-  useEffect(() => {
-    scrollToBottom();
-  }, [scrollToBottom]);
+  const advanceStage = useCallback(() => {
+    setStageIndex((prev) => {
+      const next = Math.min(prev + 1, STAGES.length - 1);
+      setAgentStatuses((s) => {
+        const u = { ...s };
+        const prevAgent = STAGES[prev].agentId;
+        const nextAgent = STAGES[next].agentId;
+        if (prevAgent !== "orchestrator") u[prevAgent] = "done";
+        u.orchestrator = "moderating";
+        if (nextAgent !== "orchestrator") u[nextAgent] = "active";
+        return u;
+      });
+      return next;
+    });
+  }, []);
 
-  const toggleTheme = () => {
-    const newTheme = theme === "dark" ? "light" : "dark";
-    setTheme(newTheme);
-  };
-
-  const agent = useAgent({
-    agent: "chat",
-    name: "Surya"
-  });
-
-  const [agentInput, setAgentInput] = useState("");
-  const handleAgentInputChange = (
-    e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>
-  ) => {
-    setAgentInput(e.target.value);
-  };
-
-  const handleAgentSubmit = async (
-    e: React.FormEvent,
-    extraData: Record<string, unknown> = {}
-  ) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!agentInput.trim()) return;
-
-    const message = agentInput;
-    setAgentInput("");
-
-    // Send message to agent
-    await sendMessage(
-      {
-        role: "user",
-        parts: [{ type: "text", text: message }]
-      },
-      {
-        body: extraData
-      }
-    );
+    if (!input.trim()) return;
+    const text = input;
+    setInput("");
+    await sendMessage({ role: "user", parts: [{ type: "text", text }] });
   };
-
-  const {
-    messages: agentMessages,
-    addToolResult,
-    clearHistory,
-    status,
-    sendMessage,
-    stop
-  } = useAgentChat<unknown, UIMessage<{ createdAt: string }>>({
-    agent
-  });
 
   const handleVoiceInput = async () => {
     if (isRecording) {
       mediaRecorder.current?.stop();
       setRecording(false);
-      isRecordingRef.current = false;
       return;
     }
-
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const tempRecorder = new MediaRecorder(stream);
-      mediaRecorder.current = tempRecorder;
+      const rec = new MediaRecorder(stream);
+      mediaRecorder.current = rec;
       audioChunks.current = [];
-
-      const audioContext = new AudioContext();
-      const analyser = audioContext.createAnalyser();
-      const mic = audioContext.createMediaStreamSource(stream);
-      mic.connect(analyser);
-      analyser.fftSize = 512;
-      const dataArr = new Uint8Array(analyser.frequencyBinCount);
-
-      let silenceStart = Date.now();
-      const THRESHOLD = 10;
-      const DURATION = 2000;
-
-      const checkSilence = () => {
-        if (isRecording) {
-          return;
-        }
-
-        analyser.getByteFrequencyData(dataArr);
-        const average = dataArr.reduce((a, b) => a + b) / dataArr.length;
-
-        if (average < THRESHOLD) {
-          if (Date.now() - silenceStart > DURATION) {
-            mediaRecorder.current?.stop();
-            setRecording(false);
-            audioContext.close();
-            return;
-          }
-        } else {
-          silenceStart = Date.now();
-        }
-
-        requestAnimationFrame(checkSilence);
-      };
-
-      tempRecorder.ondataavailable = (event) => {
-        audioChunks.current.push(event.data);
-      };
-
-      tempRecorder.onstop = async () => {
+      rec.ondataavailable = (ev) => audioChunks.current.push(ev.data);
+      rec.onstop = async () => {
         setTranscribing(true);
         const blob = new Blob(audioChunks.current, { type: "audio/webm" });
-        const formData = new FormData();
-        formData.append("audio", blob);
-
+        const fd = new FormData();
+        fd.append("audio", blob);
         try {
-          const response = await fetch("/transcribe", {
-            method: "POST",
-            body: formData
-          });
-          const data = (await response.json()) as { text?: string };
+          const res = await fetch("/transcribe", { method: "POST", body: fd });
+          const data = (await res.json()) as { text?: string };
           if (data.text) {
-            await sendMessage({
-              role: "user",
-              parts: [{ type: "text", text: data.text }]
-            });
+            await sendMessage({ role: "user", parts: [{ type: "text", text: data.text }] });
           }
-        } catch (error) {
-          console.error("Transcription error: ", error);
         } finally {
           setTranscribing(false);
-          stream.getTracks().forEach((track) => {
-            track.stop();
-          });
+          stream.getTracks().forEach((t) => t.stop());
         }
       };
-
-      tempRecorder.start();
+      rec.start();
       setRecording(true);
-      checkSilence();
-      isRecordingRef.current = true;
-    } catch (error) {
-      console.error("Microphone access error: ", error);
+    } catch (err) {
+      console.error("Mic error:", err);
     }
   };
-  const speakResponse = useCallback(async (text: string) => {
+
+  const lastSpoken = useRef<string | null>(null);
+  const speakResponse = useCallback(async (text: string, voice: string) => {
+    const clean = text.replace(/\[MEMORY:[^\]]+\]/g, "").trim();
+    if (!clean) return;
     try {
-      const cleanText = text
-        .replace(/\[MEMORY:[^\]]+\]/g, "")
-        .replace(/.*\{"type":\s*"function"[^}]*"parameters":\s*\{[^}]*\}\}.*/g, "")
-        .trim();
-      console.log("Clean text to send:", cleanText);
-      if (!cleanText) {
-        console.log("Text is empty, skipping TTS");
-        return;
-      }
-      const response = await fetch("/speak", {
+      const res = await fetch("/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: cleanText })
+        body: JSON.stringify({ text: clean, voice })
       });
-
-      if (response.ok) {
-        // const data = await response.json() as {audio:string};
-        // if(data.audio)
-        // {
-        //   const src = `data:audio/mp3;base64, ${data.audio}`;
-        //   const audio = new Audio(src);
-        //   audio.play()
-        // }
-        const blob = await response.blob();
-        const url = URL.createObjectURL(blob);
-        const audio = new Audio(url);
-        audio.play();
-      } else {
-        console.error("TTS failed with status:", response.status);
+      if (res.ok) {
+        const blob = await res.blob();
+        new Audio(URL.createObjectURL(blob)).play();
       }
-    } catch (error) {
-      console.error("TTS Error: ", error);
+    } catch (err) {
+      console.error("TTS error:", err);
     }
   }, []);
 
-  const lastSpoken = useRef<string | null>(null);
-
   useEffect(() => {
-    const lastMsg = agentMessages[agentMessages.length - 1];
-
-    if (lastMsg?.role === "assistant" && status === "ready") {
-      const textPart = lastMsg.parts?.find((p) => p.type === "text");
-      if (
-        textPart &&
-        "text" in textPart &&
-        textPart.text !== lastSpoken.current
-      ) {
+    const last = messages[messages.length - 1];
+    if (last?.role === "assistant" && status === "ready") {
+      const textPart = last.parts?.find((p) => p.type === "text");
+      if (textPart && "text" in textPart && textPart.text !== lastSpoken.current) {
         lastSpoken.current = textPart.text;
-        speakResponse(textPart.text);
+        speakResponse(textPart.text, currentAgent.voice);
       }
     }
-  }, [agentMessages, status, speakResponse]);
+  }, [messages, status, speakResponse, currentAgent.voice]);
 
-  // Scroll to bottom when messages change
   useEffect(() => {
-    agentMessages.length > 0 && scrollToBottom();
-  }, [agentMessages, scrollToBottom]);
+    if (messages.length > 0) scrollToBottom();
+  }, [messages, scrollToBottom]);
 
-  const pendingToolCallConfirmation = agentMessages.some((m: UIMessage) =>
+  const pendingConfirmation = messages.some((m: UIMessage) =>
     m.parts?.some(
-      (part) =>
-        isStaticToolUIPart(part) &&
-        part.state === "input-available" &&
-        // Manual check inside the component
-        toolsRequiringConfirmation.includes(
-          part.type.replace("tool-", "") as keyof typeof tools
-        )
+      (p) =>
+        isStaticToolUIPart(p) &&
+        p.state === "input-available" &&
+        TOOLS_REQUIRING_CONFIRMATION.includes(p.type.replace("tool-", ""))
     )
   );
 
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  function getMsgAgent(msgIdx: number) {
+    if (messages.length === 0) return AGENTS[0];
+    const si = Math.min(
+      Math.floor((msgIdx / messages.length) * (STAGES.length - 1)),
+      STAGES.length - 1
+    );
+    return agentById(STAGES[si].agentId);
+  }
+
+  // inline style helpers
+  const S = {
+    root: {
+      display: "grid",
+      gridTemplateRows: "auto 1fr",
+      height: "100vh",
+      overflow: "hidden",
+      position: "relative" as const
+    } as React.CSSProperties,
+    body: {
+      display: "grid",
+      gridTemplateColumns: "256px 1fr",
+      overflow: "hidden",
+      height: "100%"
+    } as React.CSSProperties,
+    sidebar: {
+      display: "flex",
+      flexDirection: "column" as const,
+      overflow: "hidden",
+      borderRight: "1px solid rgba(148,163,184,0.1)"
+    } as React.CSSProperties,
+    main: {
+      display: "flex",
+      flexDirection: "column" as const,
+      overflow: "hidden"
+    } as React.CSSProperties
   };
 
   return (
-    <div className="h-screen w-full p-4 flex justify-center items-center bg-fixed overflow-hidden">
+    <div className="panel-root" style={S.root}>
       <HasOpenAIKey />
-      <div className="h-[calc(100vh-2rem)] w-full mx-auto max-w-lg flex flex-col shadow-xl rounded-md overflow-hidden relative border border-neutral-300 dark:border-neutral-800">
-        <div className="px-4 py-3 border-b border-neutral-300 dark:border-neutral-800 flex items-center gap-3 sticky top-0 z-10">
-          <div className="flex items-center justify-center h-8 w-8">
-            <svg
-              width="28px"
-              height="28px"
-              className="text-[#0EA5E9]"
-              data-icon="agents"
-            >
-              <title>Cloudflare Agents</title>
-              <symbol id="ai:local:agents" viewBox="0 0 80 79">
-                <path
-                  fill="currentColor"
-                  d="M69.3 39.7c-3.1 0-5.8 2.1-6.7 5H48.3V34h4.6l4.5-2.5c1.1.8 2.5 1.2 3.9 1.2 3.8 0 7-3.1 7-7s-3.1-7-7-7-7 3.1-7 7c0 .9.2 1.8.5 2.6L51.9 30h-3.5V18.8h-.1c-1.3-1-2.9-1.6-4.5-1.9h-.2c-1.9-.3-3.9-.1-5.8.6-.4.1-.8.3-1.2.5h-.1c-.1.1-.2.1-.3.2-1.7 1-3 2.4-4 4 0 .1-.1.2-.1.2l-.3.6c0 .1-.1.1-.1.2v.1h-.6c-2.9 0-5.7 1.2-7.7 3.2-2.1 2-3.2 4.8-3.2 7.7 0 .7.1 1.4.2 2.1-1.3.9-2.4 2.1-3.2 3.5s-1.2 2.9-1.4 4.5c-.1 1.6.1 3.2.7 4.7s1.5 2.9 2.6 4c-.8 1.8-1.2 3.7-1.1 5.6 0 1.9.5 3.8 1.4 5.6s2.1 3.2 3.6 4.4c1.3 1 2.7 1.7 4.3 2.2v-.1q2.25.75 4.8.6h.1c0 .1.1.1.1.1.9 1.7 2.3 3 4 4 .1.1.2.1.3.2h.1c.4.2.8.4 1.2.5 1.4.6 3 .8 4.5.7.4 0 .8-.1 1.3-.1h.1c1.6-.3 3.1-.9 4.5-1.9V62.9h3.5l3.1 1.7c-.3.8-.5 1.7-.5 2.6 0 3.8 3.1 7 7 7s7-3.1 7-7-3.1-7-7-7c-1.5 0-2.8.5-3.9 1.2l-4.6-2.5h-4.6V48.7h14.3c.9 2.9 3.5 5 6.7 5 3.8 0 7-3.1 7-7s-3.1-7-7-7m-7.9-16.9c1.6 0 3 1.3 3 3s-1.3 3-3 3-3-1.3-3-3 1.4-3 3-3m0 41.4c1.6 0 3 1.3 3 3s-1.3 3-3 3-3-1.3-3-3 1.4-3 3-3M44.3 72c-.4.2-.7.3-1.1.3-.2 0-.4.1-.5.1h-.2c-.9.1-1.7 0-2.6-.3-1-.3-1.9-.9-2.7-1.7-.7-.8-1.3-1.7-1.6-2.7l-.3-1.5v-.7q0-.75.3-1.5c.1-.2.1-.4.2-.7s.3-.6.5-.9c0-.1.1-.1.1-.2.1-.1.1-.2.2-.3s.1-.2.2-.3c0 0 0-.1.1-.1l.6-.6-2.7-3.5c-1.3 1.1-2.3 2.4-2.9 3.9-.2.4-.4.9-.5 1.3v.1c-.1.2-.1.4-.1.6-.3 1.1-.4 2.3-.3 3.4-.3 0-.7 0-1-.1-2.2-.4-4.2-1.5-5.5-3.2-1.4-1.7-2-3.9-1.8-6.1q.15-1.2.6-2.4l.3-.6c.1-.2.2-.4.3-.5 0 0 0-.1.1-.1.4-.7.9-1.3 1.5-1.9 1.6-1.5 3.8-2.3 6-2.3q1.05 0 2.1.3v-4.5c-.7-.1-1.4-.2-2.1-.2-1.8 0-3.5.4-5.2 1.1-.7.3-1.3.6-1.9 1s-1.1.8-1.7 1.3c-.3.2-.5.5-.8.8-.6-.8-1-1.6-1.3-2.6-.2-1-.2-2 0-2.9.2-1 .6-1.9 1.3-2.6.6-.8 1.4-1.4 2.3-1.8l1.8-.9-.7-1.9c-.4-1-.5-2.1-.4-3.1s.5-2.1 1.1-2.9q.9-1.35 2.4-2.1c.9-.5 2-.8 3-.7.5 0 1 .1 1.5.2 1 .2 1.8.7 2.6 1.3s1.4 1.4 1.8 2.3l4.1-1.5c-.9-2-2.3-3.7-4.2-4.9q-.6-.3-.9-.6c.4-.7 1-1.4 1.6-1.9.8-.7 1.8-1.1 2.9-1.3.9-.2 1.7-.1 2.6 0 .4.1.7.2 1.1.3V72zm25-22.3c-1.6 0-3-1.3-3-3 0-1.6 1.3-3 3-3s3 1.3 3 3c0 1.6-1.3 3-3 3"
-                />
-              </symbol>
-              <use href="#ai:local:agents" />
-            </svg>
-          </div>
 
-          <div className="flex-1">
-            <h2 className="font-semibold text-base text-[#0EA5E9] drop-shadow-[0_0_10px_rgba(14,165,233,0.5)]">
-              Jarvis
-            </h2>
-          </div>
-
-          <div className="flex items-center gap-2 mr-2">
-            <BugIcon size={16} />
-            <Toggle
-              toggled={showDebug}
-              aria-label="Toggle debug mode"
-              onClick={() => setShowDebug((prev) => !prev)}
-            />
-          </div>
-
-          <Button
-            variant="ghost"
-            size="md"
-            shape="square"
-            className="rounded-full h-9 w-9"
-            onClick={toggleTheme}
-          >
-            {theme === "dark" ? <SunIcon size={20} /> : <MoonIcon size={20} />}
-          </Button>
-
-          <Button
-            variant="ghost"
-            size="md"
-            shape="square"
-            className="rounded-full h-9 w-9"
-            onClick={clearHistory}
-          >
-            <TrashIcon size={20} />
-          </Button>
+      {/* ── Header ──────────────────────────────────────────────────────── */}
+      <header
+        className="panel-surface panel-header"
+        style={{
+          display: "flex", alignItems: "center", gap: "1rem",
+          padding: "0.625rem 1.5rem",
+          borderBottom: "1px solid rgba(148,163,184,0.12)",
+          zIndex: 10
+        }}
+      >
+        {/* Brand */}
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+          <div style={{
+            width: 8, height: 8, borderRadius: "50%", background: "#10B981",
+            boxShadow: "0 0 8px #10B98188",
+            animation: "glow-pulse 2s ease-in-out infinite"
+          }} />
+          <span style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.08em", color: "#e7edf8" }}>PanelAI</span>
+          <span style={{ fontSize: 11, color: "#475569" }}>· Live Interview</span>
         </div>
 
-        {/* Messages */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 pb-24 max-h-[calc(100vh-10rem)]">
-          {agentMessages.length === 0 && (
-            <div className="h-full flex items-center justify-center">
-              <Card className="p-6 max-w-md mx-auto bg-neutral-100 dark:bg-neutral-900">
-                <div className="text-center space-y-4">
-                  <div className="bg-[#0EA5E9]/10 text-[#0EA5E9] rounded-full p-3 inline-flex">
-                    <RobotIcon size={24} />
+        {/* Progress bar */}
+        <div style={{ flex: 1, maxWidth: 400, margin: "0 auto" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
+            <span style={{ fontSize: 11, color: "#94a3b8" }}>{STAGES[stageIndex].label}</span>
+            <span style={{ fontSize: 11, color: "#475569" }}>{stageIndex + 1} / {STAGES.length}</span>
+          </div>
+          <div style={{ height: 3, borderRadius: 99, background: "rgba(255,255,255,0.06)", overflow: "hidden" }}>
+            <div style={{
+              height: "100%", borderRadius: 99, width: `${progressPct}%`,
+              background: `linear-gradient(90deg, ${currentAgent.color}88, ${currentAgent.color})`,
+              transition: "width 0.7s ease, background 0.5s ease"
+            }} />
+          </div>
+        </div>
+
+        {/* Controls */}
+        <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+          {[
+            { icon: theme === "dark" ? <SunIcon size={15}/> : <MoonIcon size={15}/>, action: () => setTheme(t => t === "dark" ? "light" : "dark") },
+            { icon: <TrashIcon size={15}/>, action: clearHistory }
+          ].map((btn, i) => (
+            <button
+              // biome-ignore lint/suspicious/noArrayIndexKey: static
+              key={i}
+              type="button"
+              onClick={btn.action}
+              style={{
+                background: "none", border: "none", cursor: "pointer",
+                padding: "0.375rem", borderRadius: 6, color: "#64748b",
+                display: "flex", alignItems: "center"
+              }}
+            >
+              {btn.icon}
+            </button>
+          ))}
+        </div>
+      </header>
+
+      {/* ── Body ─────────────────────────────────────────────────────────── */}
+      <div style={S.body}>
+
+        {/* ── Sidebar ─────────────────────────────────────────────────── */}
+        <aside className="panel-sidebar" style={S.sidebar}>
+          <div style={{ padding: "0.625rem 1rem", borderBottom: "1px solid rgba(148,163,184,0.08)" }}>
+            <span style={{ fontSize: 10, fontWeight: 700, letterSpacing: "0.12em", color: "#475569", textTransform: "uppercase" }}>
+              Interview Panel
+            </span>
+          </div>
+
+          <div style={{ flex: 1, overflowY: "auto", padding: "0.75rem", display: "flex", flexDirection: "column", gap: 8 }}>
+            {AGENTS.map((a) => {
+              const st = agentStatuses[a.id];
+              const isActive = st === "active" || st === "moderating";
+              const isDone = st === "done";
+              return (
+                <div
+                  key={a.id}
+                  style={{
+                    borderRadius: 10, padding: "0.625rem",
+                    border: `1px solid ${isActive ? `${a.color}33` : isDone ? "rgba(16,185,129,0.18)" : "rgba(148,163,184,0.08)"}`,
+                    background: isActive ? `linear-gradient(135deg,${a.color}10,${a.color}05)` : isDone ? "rgba(16,185,129,0.04)" : "rgba(255,255,255,0.02)",
+                    boxShadow: isActive ? `0 0 18px ${a.color}18` : "none",
+                    opacity: isDone ? 0.65 : 1,
+                    transition: "all 0.4s ease"
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{
+                      width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      fontSize: 11, fontWeight: 800, color: "#fff",
+                      background: isActive ? `linear-gradient(135deg,${a.color},${a.color}bb)` : isDone ? "rgba(16,185,129,0.25)" : "rgba(255,255,255,0.07)",
+                      boxShadow: isActive ? `0 0 12px ${a.color}44` : "none",
+                      transition: "all 0.4s ease"
+                    }}>
+                      {isDone
+                        ? <CheckCircleIcon size={15} weight="fill" style={{ color: "#10B981" }} />
+                        : a.initials}
+                    </div>
+
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: isActive ? "#e7edf8" : "#64748b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {a.name}
+                      </div>
+                      <div style={{ fontSize: 10, color: "#334155", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                        {a.role}
+                      </div>
+                    </div>
+
+                    <div style={{ flexShrink: 0 }}>
+                      {isActive && (
+                        <div style={{ width: 7, height: 7, borderRadius: "50%", background: a.color, boxShadow: `0 0 6px ${a.color}`, animation: "glow-pulse 1.5s ease-in-out infinite" }} />
+                      )}
+                      {st === "done" && <CheckCircleIcon size={13} weight="fill" style={{ color: "#10B981" }} />}
+                      {st === "waiting" && <ClockIcon size={13} style={{ color: "#1e293b" }} />}
+                    </div>
                   </div>
-                  <h3 className="font-semibold text-lg">Good evening, sir.</h3>
-                  <p className="text-muted-foreground text-sm">
-                    I'm Jarvis, your personal AI assistant. How may I help you
-                    today?
-                  </p>
-                  <ul className="text-sm text-left space-y-2">
-                    <li className="flex items-center gap-2">
-                      <span className="text-[#0EA5E9]">•</span>
-                      <span>Ask me anything</span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="text-[#0EA5E9]">•</span>
-                      <span>Click the mic to speak</span>
-                    </li>
-                    <li className="flex items-center gap-2">
-                      <span className="text-[#0EA5E9]">•</span>
-                      <span>I'll remember what you tell me</span>
-                    </li>
-                  </ul>
+
+                  {isActive && (
+                    <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px solid rgba(255,255,255,0.06)", display: "flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ fontSize: 10, color: a.color, fontWeight: 600 }}>
+                        {a.id === "orchestrator" ? "Moderating" : "Interviewing"}
+                      </span>
+                      {[0,1,2].map((i) => (
+                        <div key={i} style={{ width: 4, height: 4, borderRadius: "50%", background: a.color, animation: `dot-bounce 1.2s ${i*0.2}s ease-in-out infinite` }} />
+                      ))}
+                    </div>
+                  )}
                 </div>
-              </Card>
+              );
+            })}
+          </div>
+
+          {!isLastStage && (
+            <div style={{ padding: "0.75rem", borderTop: "1px solid rgba(148,163,184,0.08)" }}>
+              <button
+                type="button"
+                onClick={advanceStage}
+                style={{
+                  width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+                  padding: "0.5rem", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer",
+                  color: currentAgent.color, background: `${currentAgent.color}12`,
+                  border: `1px solid ${currentAgent.color}28`, transition: "all 0.2s ease"
+                }}
+              >
+                <CaretRightIcon size={13} />
+                Next Stage
+              </button>
             </div>
           )}
+        </aside>
 
-          {agentMessages.map((m, index) => {
-            const isUser = m.role === "user";
-            const showAvatar =
-              index === 0 || agentMessages[index - 1]?.role !== m.role;
+        {/* ── Main ──────────────────────────────────────────────────────── */}
+        <main style={S.main}>
 
-            return (
-              <div key={m.id}>
-                {showDebug && (
-                  <pre className="text-xs text-muted-foreground overflow-scroll">
-                    {JSON.stringify(m, null, 2)}
-                  </pre>
-                )}
-                <div
-                  className={`flex ${isUser ? "justify-end" : "justify-start"}`}
-                >
-                  <div
-                    className={`flex gap-2 max-w-[85%] ${
-                      isUser ? "flex-row-reverse" : "flex-row"
-                    }`}
-                  >
-                    {showAvatar && !isUser ? (
-                      <Avatar username={"J"} className="shrink-0" />
-                    ) : (
-                      !isUser && <div className="w-8" />
-                    )}
+          {/* Active agent hero */}
+          <div style={{
+            padding: "0.875rem 1.5rem", flexShrink: 0,
+            borderBottom: "1px solid rgba(148,163,184,0.1)",
+            display: "flex", alignItems: "center", gap: "1rem",
+            background: `linear-gradient(90deg, ${currentAgent.color}10 0%, transparent 55%)`
+          }}>
+            {/* Avatar */}
+            <div style={{
+              width: 52, height: 52, borderRadius: 14, flexShrink: 0,
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontSize: 16, fontWeight: 800, color: "#fff",
+              background: `linear-gradient(135deg, ${currentAgent.color}, ${currentAgent.color}99)`,
+              boxShadow: `0 0 28px ${currentAgent.color}44`,
+              position: "relative"
+            }}>
+              {currentAgent.initials}
+              <div style={{
+                position: "absolute", bottom: -4, right: -4,
+                width: 20, height: 20, borderRadius: "50%",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                background: currentAgent.color, color: "#fff",
+                border: "2px solid rgba(7,13,24,0.9)"
+              }}>
+                {currentAgent.icon}
+              </div>
+            </div>
 
-                    <div>
-                      <div>
-                        {m.parts?.map((part, i) => {
-                          if (part.type === "text") {
-                            const cleanText = part.text
-                              .replace(/\[MEMORY:[^\]]+\]/g, "")
-                              .replace(/.*\{"type":\s*"function"[^}]*"parameters":\s*\{[^}]*\}\}.*/g, "")
-                              .trim();
-                            return (
-                              // biome-ignore lint/suspicious/noArrayIndexKey: immutable index
-                              <div key={i}>
-                                <Card
-                                  className={`p-3 rounded-md bg-neutral-100 dark:bg-neutral-900 ${
-                                    isUser
-                                      ? "rounded-br-none"
-                                      : "rounded-bl-none border-assistant-border-l-[#0EA5E9]"
-                                  } ${
-                                    cleanText.startsWith("scheduled message")
-                                      ? "border-accent/50"
-                                      : ""
-                                  } relative`}
-                                >
-                                  {cleanText.startsWith(
-                                    "scheduled message"
-                                  ) && (
-                                    <span className="absolute -top-3 -left-2 text-base">
-                                      🕒
-                                    </span>
-                                  )}
-                                  <MemoizedMarkdown
-                                    id={`${m.id}-${i}`}
-                                    content={cleanText.replace(
-                                      /^scheduled message: /,
-                                      ""
-                                    )}
-                                  />
-                                </Card>
-                                <p
-                                  className={`text-xs text-muted-foreground mt-1 ${
-                                    isUser ? "text-right" : "text-left"
-                                  }`}
-                                >
-                                  {formatTime(
-                                    m.metadata?.createdAt
-                                      ? new Date(m.metadata.createdAt)
-                                      : new Date()
-                                  )}
-                                </p>
-                              </div>
-                            );
-                          }
+            <div style={{ flex: 1 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 2 }}>
+                <span style={{ fontSize: 15, fontWeight: 700, color: "#e7edf8" }}>{currentAgent.name}</span>
+                <span style={{
+                  fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 99, letterSpacing: "0.06em",
+                  color: currentAgent.color, background: `${currentAgent.color}20`, border: `1px solid ${currentAgent.color}30`
+                }}>
+                  {STAGES[stageIndex].agentId === "orchestrator" ? "MODERATOR" : "ACTIVE"}
+                </span>
+              </div>
+              <div style={{ fontSize: 12, color: "#64748b" }}>{currentAgent.role}</div>
+              <div style={{ fontSize: 11, color: "#334155", marginTop: 1 }}>{currentAgent.description}</div>
+            </div>
 
-                          if (
-                            isStaticToolUIPart(part) &&
-                            m.role === "assistant"
-                          ) {
-                            const toolCallId = part.toolCallId;
-                            const toolName = part.type.replace("tool-", "");
-                            const needsConfirmation =
-                              toolsRequiringConfirmation.includes(
-                                toolName as keyof typeof tools
-                              );
+            {/* Stage pills */}
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 290, justifyContent: "flex-end" }}>
+              {STAGES.map((s, i) => {
+                const sa = agentById(s.agentId);
+                return (
+                  <span key={`${s.agentId}-${i}`} style={{
+                    fontSize: 10, padding: "2px 8px", borderRadius: 99, fontWeight: i === stageIndex ? 700 : 500,
+                    background: i === stageIndex ? sa.color : i < stageIndex ? "rgba(255,255,255,0.07)" : "rgba(255,255,255,0.03)",
+                    color: i === stageIndex ? "#fff" : i < stageIndex ? "#475569" : "#1e293b",
+                    border: `1px solid ${i === stageIndex ? `${sa.color}55` : "transparent"}`,
+                    transition: "all 0.3s ease"
+                  }}>
+                    {s.label}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
 
-                            return (
-                              <ToolInvocationCard
-                                // biome-ignore lint/suspicious/noArrayIndexKey: using index is safe here as the array is static
-                                key={`${toolCallId}-${i}`}
-                                toolUIPart={part}
-                                toolCallId={toolCallId}
-                                needsConfirmation={needsConfirmation}
-                                onSubmit={({ toolCallId, result }) => {
-                                  addToolResult({
-                                    tool: part.type.replace("tool-", ""),
-                                    toolCallId,
-                                    output: result
-                                  });
-                                }}
-                                addToolResult={(toolCallId, result) => {
-                                  addToolResult({
-                                    tool: part.type.replace("tool-", ""),
-                                    toolCallId,
-                                    output: result
-                                  });
-                                }}
-                              />
-                            );
-                          }
-                          return null;
-                        })}
+          {/* Transcript */}
+          <div
+            className="panel-chat-scroll"
+            style={{ flex: 1, overflowY: "auto", padding: "1.25rem 1.5rem", display: "flex", flexDirection: "column", gap: "1rem" }}
+          >
+            {/* Empty state */}
+            {messages.length === 0 && (
+              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", textAlign: "center", maxWidth: 400, margin: "2rem auto 0" }}>
+                <div style={{
+                  width: 64, height: 64, borderRadius: 18, fontSize: 20, fontWeight: 800, color: "#fff",
+                  display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 18,
+                  background: `linear-gradient(135deg,${currentAgent.color},${currentAgent.color}88)`,
+                  boxShadow: `0 0 48px ${currentAgent.color}44`
+                }}>
+                  {currentAgent.initials}
+                </div>
+                <h3 style={{ fontSize: 17, fontWeight: 700, color: "#e7edf8", margin: "0 0 8px" }}>Welcome to your Panel Interview</h3>
+                <p style={{ fontSize: 13, color: "#475569", lineHeight: 1.65, marginBottom: 18 }}>
+                  You'll be speaking with a panel of <strong style={{ color: "#94a3b8" }}>5 specialists</strong>, moderated by <strong style={{ color: "#8B5CF6" }}>Alex Monroe</strong>.
+                </p>
+                <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 6 }}>
+                  {AGENTS.slice(1).map((a) => (
+                    <div key={a.id} style={{
+                      display: "flex", alignItems: "center", gap: 10,
+                      padding: "0.5rem 0.75rem", borderRadius: 8,
+                      background: "rgba(255,255,255,0.03)", border: "1px solid rgba(148,163,184,0.08)"
+                    }}>
+                      <div style={{ width: 24, height: 24, borderRadius: 6, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", background: a.color }}>
+                        {a.initials}
                       </div>
+                      <div style={{ textAlign: "left" }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#94a3b8" }}>{a.name}</div>
+                        <div style={{ fontSize: 10, color: "#475569" }}>{a.role}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p style={{ fontSize: 11, color: "#1e293b", marginTop: 18 }}>Send a message to begin your interview.</p>
+              </div>
+            )}
+
+            {/* Messages */}
+            {messages.map((m, idx) => {
+              const isUser = m.role === "user";
+              const ma = isUser ? null : getMsgAgent(idx);
+              const showHeader = !isUser && (idx === 0 || messages[idx - 1]?.role === "user");
+
+              return (
+                <div key={m.id} className="panel-animate-in">
+                  {!isUser && showHeader && ma && (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                      <div style={{ width: 22, height: 22, borderRadius: 5, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 9, fontWeight: 800, color: "#fff", background: ma.color, flexShrink: 0 }}>
+                        {ma.initials}
+                      </div>
+                      <span style={{ fontSize: 12, fontWeight: 700, color: ma.color }}>{ma.name}</span>
+                      <span style={{ fontSize: 10, color: "#334155" }}>{ma.role}</span>
+                    </div>
+                  )}
+
+                  <div style={{ display: "flex", justifyContent: isUser ? "flex-end" : "flex-start" }}>
+                    <div style={{ maxWidth: "78%" }}>
+                      {m.parts?.map((part, i) => {
+                        if (part.type === "text") {
+                          const clean = part.text
+                            .replace(/\[MEMORY:[^\]]+\]/g, "")
+                            .replace(/.*\{"type":\s*"function"[^}]*"parameters":\s*\{[^}]*\}\}.*/g, "")
+                            .trim();
+                          if (!clean) return null;
+                          return (
+                            // biome-ignore lint/suspicious/noArrayIndexKey: immutable
+                            <div key={i}>
+                              <div
+                                className={isUser ? "panel-bubble-user" : "panel-bubble-agent"}
+                                style={{
+                                  padding: "0.625rem 0.875rem", fontSize: 13, lineHeight: 1.65,
+                                  borderRadius: isUser ? "12px 12px 3px 12px" : "3px 12px 12px 12px",
+                                  borderLeft: !isUser && ma ? `3px solid ${ma.color}` : undefined
+                                }}
+                              >
+                                <MemoizedMarkdown id={`${m.id}-${i}`} content={clean.replace(/^scheduled message: /, "")} />
+                              </div>
+                              <div style={{ fontSize: 10, color: "#1e293b", marginTop: 3, textAlign: isUser ? "right" : "left" }}>
+                                {fmtTime(m.metadata?.createdAt ? new Date(m.metadata.createdAt) : new Date())}
+                              </div>
+                            </div>
+                          );
+                        }
+
+                        if (isStaticToolUIPart(part) && m.role === "assistant") {
+                          const toolName = part.type.replace("tool-", "");
+                          return (
+                            <ToolInvocationCard
+                              // biome-ignore lint/suspicious/noArrayIndexKey: safe
+                              key={`${part.toolCallId}-${i}`}
+                              toolUIPart={part}
+                              toolCallId={part.toolCallId}
+                              needsConfirmation={TOOLS_REQUIRING_CONFIRMATION.includes(toolName)}
+                              onSubmit={({ toolCallId, result }) => addToolResult({ tool: toolName, toolCallId, output: result })}
+                              addToolResult={(toolCallId, result) => addToolResult({ tool: toolName, toolCallId, output: result })}
+                            />
+                          );
+                        }
+                        return null;
+                      })}
                     </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
-          {(status === "submitted" || status === "streaming") && (
-            <div className="flex justify-start">
-              <div className="flex gap-2 max-w-[85%]">
-                <Avatar username={"J"} className="shrink-0" />
-                <Card className="p-3 rounded-md rounded-bl-none bg-neutral-100 dark:bg-neutral-900 border-l-2 border-l-[#0EA5E9]">
-                  <div className="flex items-center gap-1">
-                    <div
-                      className="w-2 h-2 bg-[#0EA5E9] rounded-full animate-bounce"
-                      style={{ animationDelay: "0ms" }}
-                    />
-                    <div
-                      className="w-2 h-2 bg-[#0EA5E9] rounded-full animate-bounce"
-                      style={{ animationDelay: "150ms" }}
-                    />
-                    <div
-                      className="w-2 h-2 bg-[#0EA5E9] rounded-full animate-bounce"
-                      style={{ animationDelay: "300ms" }}
-                    />
-                  </div>
-                </Card>
-              </div>
-            </div>
-          )}
-          <div ref={messagesEndRef} />
-        </div>
+              );
+            })}
 
-        {/* Input Area */}
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            handleAgentSubmit(e, {
-              annotations: {
-                hello: "world"
-              }
-            });
-            setTextareaHeight("auto"); // Reset height after submission
-          }}
-          className="p-3 bg-neutral-50 absolute bottom-0 left-0 right-0 z-10 border-t border-neutral-300 dark:border-neutral-800 dark:bg-neutral-900"
-        >
-          <div className="flex items-center gap-2">
-            <div className="flex-1 relative">
-              <Textarea
-                disabled={pendingToolCallConfirmation}
-                placeholder={
-                  pendingToolCallConfirmation
-                    ? "Please respond to the tool confirmation above..."
-                    : "Ask Jarvis anything..."
-                }
-                className="flex w-full border border-neutral-200 dark:border-neutral-700 px-3 py-2  ring-offset-background placeholder:text-neutral-500 dark:placeholder:text-neutral-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-neutral-300 dark:focus-visible:ring-neutral-700 focus-visible:ring-offset-2 dark:focus-visible:ring-offset-neutral-900 disabled:cursor-not-allowed disabled:opacity-50 md:text-sm min-h-[24px] max-h-[calc(75dvh)] overflow-hidden resize-none rounded-2xl text-base! pb-10 dark:bg-neutral-900"
-                value={agentInput}
-                onChange={(e) => {
-                  handleAgentInputChange(e);
-                  // Auto-resize the textarea
-                  e.target.style.height = "auto";
-                  e.target.style.height = `${e.target.scrollHeight}px`;
-                  setTextareaHeight(`${e.target.scrollHeight}px`);
-                }}
-                onKeyDown={(e) => {
-                  if (
-                    e.key === "Enter" &&
-                    !e.shiftKey &&
-                    !e.nativeEvent.isComposing
-                  ) {
-                    e.preventDefault();
-                    handleAgentSubmit(e as unknown as React.FormEvent);
-                    setTextareaHeight("auto"); // Reset height on Enter submission
-                  }
-                }}
-                rows={2}
-                style={{ height: textareaHeight }}
-              />
-              <div className="absolute bottom-0 right-0 p-2 w-fit flex flex-row justify-end gap-2">
-                <button
-                  type="button"
-                  onClick={handleVoiceInput}
-                  disabled={isTranscribing}
-                  className={`inline-flex items-center cursor-pointer justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 rounded-full p-1.5 h-fit border ${
-                    isRecording
-                      ? "bg-[#0EA5E9] text-white border-[#0EA5E9] animate-pulse"
-                      : "bg-primary text-primary-foreground hover:bg-primary/90 border-neutral-200 dark:border-neutral-800"
-                  }`}
-                  aria-label={
-                    isRecording ? "Stop recording" : "Start voice input"
-                  }
-                >
-                  <MicrophoneIcon size={16} />
-                </button>
-                {status === "submitted" || status === "streaming" ? (
+            {/* Typing indicator */}
+            {(status === "submitted" || status === "streaming") && (
+              <div className="panel-animate-in" style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{
+                  width: 28, height: 28, borderRadius: 7, flexShrink: 0,
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  fontSize: 10, fontWeight: 800, color: "#fff",
+                  background: `linear-gradient(135deg,${currentAgent.color},${currentAgent.color}99)`,
+                  boxShadow: `0 0 10px ${currentAgent.color}44`
+                }}>
+                  {currentAgent.initials}
+                </div>
+                <div className="panel-bubble-agent" style={{ padding: "0.5rem 0.875rem", borderRadius: "3px 12px 12px 12px", borderLeft: `3px solid ${currentAgent.color}`, display: "flex", gap: 5, alignItems: "center" }}>
+                  {[0,1,2].map((i) => (
+                    <div key={i} style={{ width: 7, height: 7, borderRadius: "50%", background: currentAgent.color, animation: `dot-bounce 1.2s ${i*0.2}s ease-in-out infinite` }} />
+                  ))}
+                </div>
+                <span style={{ fontSize: 11, color: "#334155" }}>{currentAgent.name} is typing…</span>
+              </div>
+            )}
+
+            <div ref={messagesEndRef} />
+          </div>
+
+          {/* Input */}
+          <div style={{ padding: "0.875rem 1.5rem", borderTop: "1px solid rgba(148,163,184,0.1)", flexShrink: 0 }}>
+            <form onSubmit={handleSubmit}>
+              <div className="panel-input-shell" style={{ display: "flex", alignItems: "flex-end", gap: 10, padding: "0.625rem 0.75rem", borderRadius: 14, borderColor: `${currentAgent.color}25` }}>
+                <div style={{ width: 26, height: 26, borderRadius: "50%", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, color: "#64748b", background: "rgba(255,255,255,0.06)", border: "1px solid rgba(148,163,184,0.12)", marginBottom: 1 }}>C</div>
+
+                <textarea
+                  disabled={pendingConfirmation || isTranscribing}
+                  placeholder={pendingConfirmation ? "Please respond to the confirmation above…" : isTranscribing ? "Transcribing…" : "Your response…"}
+                  value={input}
+                  rows={1}
+                  onChange={(e) => {
+                    setInput(e.target.value);
+                    e.target.style.height = "auto";
+                    e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px`;
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                      e.preventDefault();
+                      handleSubmit(e as unknown as React.FormEvent);
+                    }
+                  }}
+                  style={{ flex: 1, background: "transparent", border: "none", outline: "none", resize: "none", fontSize: 13, color: "#dbeafe", lineHeight: 1.5, minHeight: 20, maxHeight: 160, overflowY: "auto", fontFamily: "inherit", padding: 0 }}
+                />
+
+                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                   <button
                     type="button"
-                    onClick={stop}
-                    className="inline-flex items-center cursor-pointer justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 rounded-full p-1.5 h-fit border border-neutral-200 dark:border-neutral-800"
-                    aria-label="Stop generation"
+                    onClick={handleVoiceInput}
+                    disabled={isTranscribing}
+                    style={{
+                      display: "flex", alignItems: "center", padding: "0.375rem", borderRadius: 8, cursor: "pointer",
+                      background: isRecording ? currentAgent.color : "rgba(255,255,255,0.06)",
+                      border: `1px solid ${isRecording ? currentAgent.color : "rgba(148,163,184,0.15)"}`,
+                      color: isRecording ? "#fff" : "#64748b",
+                      animation: isRecording ? "glow-pulse 1s ease-in-out infinite" : "none"
+                    }}
                   >
-                    <StopIcon size={16} />
+                    <MicrophoneIcon size={15} />
                   </button>
-                ) : (
-                  <button
-                    type="submit"
-                    className="inline-flex items-center cursor-pointer justify-center gap-2 whitespace-nowrap text-sm font-medium ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg]:size-4 [&_svg]:shrink-0 bg-primary text-primary-foreground hover:bg-primary/90 rounded-full p-1.5 h-fit border border-neutral-200 dark:border-neutral-800"
-                    disabled={pendingToolCallConfirmation || !agentInput.trim()}
-                    aria-label="Send message"
-                  >
-                    <PaperPlaneTiltIcon size={16} />
-                  </button>
-                )}
+
+                  {status === "submitted" || status === "streaming" ? (
+                    <button
+                      type="button"
+                      onClick={stop}
+                      style={{ display: "flex", alignItems: "center", padding: "0.375rem", borderRadius: 8, cursor: "pointer", background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.25)", color: "#f87171" }}
+                    >
+                      <StopIcon size={15} />
+                    </button>
+                  ) : (
+                    <button
+                      type="submit"
+                      disabled={pendingConfirmation || !input.trim()}
+                      style={{
+                        display: "flex", alignItems: "center", padding: "0.375rem", borderRadius: 8,
+                        cursor: input.trim() ? "pointer" : "default",
+                        background: input.trim() ? currentAgent.color : "rgba(255,255,255,0.05)",
+                        border: `1px solid ${input.trim() ? `${currentAgent.color}55` : "rgba(148,163,184,0.1)"}`,
+                        color: input.trim() ? "#fff" : "#1e293b",
+                        opacity: (!input.trim() || pendingConfirmation) ? 0.4 : 1,
+                        transition: "all 0.2s ease"
+                      }}
+                    >
+                      <PaperPlaneTiltIcon size={15} />
+                    </button>
+                  )}
+                </div>
               </div>
-            </div>
+
+              <p style={{ fontSize: 10, color: "#1e293b", textAlign: "center", marginTop: 5 }}>
+                Responses are recorded for evaluation · Enter to send · Shift+Enter for new line
+              </p>
+            </form>
           </div>
-        </form>
+        </main>
       </div>
+
+      {/* Keyframe animations */}
+      <style>{`
+        @keyframes glow-pulse { 0%,100%{opacity:0.7} 50%{opacity:1} }
+        @keyframes dot-bounce { 0%,80%,100%{transform:translateY(0)} 40%{transform:translateY(-5px)} }
+      `}</style>
     </div>
   );
 }
 
-const hasOpenAiKeyPromise = fetch("/check-open-ai-key").then((res) =>
-  res.json<{ success: boolean }>()
+// ─── API key guard ────────────────────────────────────────────────────────────
+
+const hasOpenAiKeyPromise = fetch("/check-open-ai-key").then(
+  (res) => res.json() as Promise<{ success: boolean }>
 );
 
 function HasOpenAIKey() {
-  const hasOpenAiKey = use(hasOpenAiKeyPromise);
-
-  if (!hasOpenAiKey.success) {
-    return (
-      <div className="fixed top-0 left-0 right-0 z-50 bg-red-500/10 backdrop-blur-sm">
-        <div className="max-w-3xl mx-auto p-4">
-          <div className="bg-white dark:bg-neutral-900 rounded-lg shadow-lg border border-red-200 dark:border-red-900 p-4">
-            <div className="flex items-start gap-3">
-              <div className="p-2 bg-red-100 dark:bg-red-900/30 rounded-full">
-                <svg
-                  className="w-5 h-5 text-red-600 dark:text-red-400"
-                  xmlns="http://www.w3.org/2000/svg"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                  aria-labelledby="warningIcon"
-                >
-                  <title id="warningIcon">Warning Icon</title>
-                  <circle cx="12" cy="12" r="10" />
-                  <line x1="12" y1="8" x2="12" y2="12" />
-                  <line x1="12" y1="16" x2="12.01" y2="16" />
-                </svg>
-              </div>
-              <div className="flex-1">
-                <h3 className="text-lg font-semibold text-red-600 dark:text-red-400 mb-2">
-                  OpenAI API Key Not Configured
-                </h3>
-                <p className="text-neutral-600 dark:text-neutral-300 mb-1">
-                  Requests to the API, including from the frontend UI, will not
-                  work until an OpenAI API key is configured.
-                </p>
-                <p className="text-neutral-600 dark:text-neutral-300">
-                  Please configure an OpenAI API key by setting a{" "}
-                  <a
-                    href="https://developers.cloudflare.com/workers/configuration/secrets/"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-red-600 dark:text-red-400"
-                  >
-                    secret
-                  </a>{" "}
-                  named{" "}
-                  <code className="bg-red-100 dark:bg-red-900/30 px-1.5 py-0.5 rounded text-red-600 dark:text-red-400 font-mono text-sm">
-                    OPENAI_API_KEY
-                  </code>
-                  . <br />
-                  You can also use a different model provider by following these{" "}
-                  <a
-                    href="https://github.com/cloudflare/agents-starter?tab=readme-ov-file#use-a-different-ai-model-provider"
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-red-600 dark:text-red-400"
-                  >
-                    instructions.
-                  </a>
-                </p>
-              </div>
-            </div>
-          </div>
-        </div>
+  const result = use(hasOpenAiKeyPromise);
+  if (result.success) return null;
+  return (
+    <div style={{ position: "fixed", top: 0, left: 0, right: 0, zIndex: 100, padding: "1rem", background: "rgba(7,13,24,0.9)", backdropFilter: "blur(8px)", borderBottom: "1px solid rgba(239,68,68,0.3)" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto", display: "flex", alignItems: "center", gap: 12, padding: "0.75rem 1rem", borderRadius: 10, background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.22)" }}>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#f87171" strokeWidth="2">
+          <title>Warning</title>
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <span style={{ fontSize: 13, color: "#fca5a5" }}>
+          <strong>OpenAI API Key not configured.</strong>{" "}
+          Set a secret named <code style={{ background: "rgba(239,68,68,0.15)", padding: "1px 6px", borderRadius: 4, fontFamily: "monospace", fontSize: 12 }}>OPENAI_API_KEY</code> to enable the interview.
+        </span>
       </div>
-    );
-  }
-  return null;
+    </div>
+  );
 }

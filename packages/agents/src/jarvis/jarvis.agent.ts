@@ -1,5 +1,4 @@
 import type { Schedule } from "agents";
-import { getSchedulePrompt } from "agents/schedule";
 import { AIChatAgent } from "@cloudflare/ai-chat";
 import { createWorkersAI } from "workers-ai-provider";
 import {
@@ -11,8 +10,7 @@ import {
   createUIMessageStreamResponse,
   type ToolSet
 } from "ai";
-import { processToolCalls, cleanupMessages } from "@panelai/shared";
-import { tools, executions } from "./jarvis.tools.js";
+import { cleanupMessages } from "@panelai/shared";
 
 interface Memory {
   id: number;
@@ -61,7 +59,7 @@ export class Chat extends AIChatAgent<Env> {
   ) {
     const workersAI = createWorkersAI({ binding: this.env.AI });
     const model = workersAI(
-      "@cf/meta/llama-3.3-70b-instruct-fp8-fast" as unknown as Parameters<
+      "@cf/deepseek-ai/deepseek-r1-distill-qwen-32b" as unknown as Parameters<
         typeof workersAI
       >[0]
     );
@@ -72,91 +70,47 @@ export class Chat extends AIChatAgent<Env> {
         ? `\n\nYou remember the following about the user:\n${memories.map((m) => `- ${m.key}: ${m.value}`).join("\n")}`
         : "";
 
-    let mcpTools = {};
-    try {
-      mcpTools = this.mcp.getAITools();
-    } catch (_e) {}
-
-    // Collect all tools, including MCP tools
-    const allTools = {
-      ...tools,
-      ...mcpTools
-    };
-
     const stream = createUIMessageStream({
       execute: async ({ writer }) => {
-        // Clean up incomplete tool calls to prevent API errors
+        // Clean up incomplete tool calls from historical messages to prevent API errors
         const cleanedMessages = cleanupMessages(this.messages);
-        const toolPatterns = [
-          /what'?s the weather/,
-          /how'?s the weather/,
-          /weather in \w+/,
-          /remind me .+ in \d+/,
-          /set a reminder/,
-          /schedule .+/,
-          /what time is it in/,
-          /show my (tasks|reminders)/,
-          /what are my (tasks|reminders)/,
-          /cancel .*(task|reminder)/
-        ];
-        const lastUserMsg = cleanedMessages
-          .filter((m: any) => m.role === "user")
-          .pop();
-        const lastText =
-          (
-            lastUserMsg?.parts?.find((p: any) => p.type === "text") as any
-          )?.text?.toLowerCase() || "";
-        const shouldUseTool = toolPatterns.some((pattern) =>
-          pattern.test(lastText)
-        );
-
-        // Process any pending tool calls from previous messages
-        const processedMessages = await processToolCalls({
-          messages: cleanedMessages,
-          dataStream: writer,
-          tools: shouldUseTool ? allTools : ({} as ToolSet),
-          executions
-        });
 
         const result = streamText({
-          system: `You are Jarvis, a personal AI assistant. You are helpful, conversational with a good sense of humor and efficient. You don't waste words.
+          system: `You are the PanelAI Interview Orchestrator. You coordinate a panel of AI interviewers who are assessing a candidate. Your role shifts depending on the stage of the interview.
 
-          CRITICAL INSTRUCTION - READ THIS FIRST:
-          Before responding, ask yourself: "Did the user EXPLICITLY ask me to do something that requires a tool?"
+          ## Your Panel
+          - **Alex Monroe** (you) — Orchestrator & Moderator. Warm, professional, puts candidates at ease.
+          - **Sarah Park** — HR & Recruiter. Covers logistics, compensation, culture alignment.
+          - **Dr. Raj Patel** — Technical Interviewer. Assesses coding, system design, problem-solving.
+          - **Maya Chen** — Culture & Values. Evaluates teamwork, communication, company fit.
+          - **James Liu** — Domain Expert. Deep-dives into role-specific knowledge.
+          - **Lisa Torres** — Behavioral Analyst. Uses STAR method to assess past behavior.
 
-          Examples of when NOT to use tools:
-          - "Hello" → Just say hello back. NO TOOLS.
-          - "Hi Jarvis" → Greet them warmly. NO TOOLS.
-          - "How are you?" → Reply conversationally. NO TOOLS.
-          - "What can you do?" → Explain your capabilities. NO TOOLS.
-          - "Thanks" → You're welcome. NO TOOLS.
+          ## Interview Flow
+          1. **Welcome** — Alex greets the candidate warmly, explains the format, introduces the panel.
+          2. **HR Screen** (Sarah) — Asks about background, motivation, logistics.
+          3. **Technical** (Dr. Raj) — Technical questions relevant to the role.
+          4. **Culture Fit** (Maya) — Values, working style, team dynamics.
+          5. **Domain** (James) — Specific domain knowledge for the position.
+          6. **Behavioral** (Lisa) — STAR-format behavioral questions.
+          7. **Closing** (Alex) — Thanks candidate, invites their questions, explains next steps.
 
-          Examples of when TO use tools:
-          - "Remind me to call mom in 5 minutes" → Use scheduleTask
-          - "What's the weather in Tokyo?" → Use getWeatherInformation  
-          - "What time is it in London?" → Use getLocalTime
-          - "Show my reminders" → Use getScheduledTasks
-          - "Cancel that reminder" → Use cancelScheduledTask
+          ## Tone & Style
+          - Professional but human — this is a real interview, not a chatbot demo.
+          - Each panelist has a distinct voice: Sarah is warm, Raj is precise, Maya is empathetic, James is analytical, Lisa is encouraging.
+          - Ask one question at a time. Listen carefully. Follow up naturally.
+          - When handing off to another panelist, say so clearly: "I'll hand it over to Dr. Patel now who will cover the technical portion."
+          - At closing, always ask "Do you have any questions for the panel?"
+          - Keep responses concise — interviewers don't monologue.
 
-          If the answer is NO, just respond conversationally. DO NOT use any tools.
-          Your personality:
-            - You address the user as "sir" or by their name once you know it
-            - Warm, American butler vibes, but modern and professional who's also a friend
-            - Direct and useful, not sycophantic
-            - You're genuinely interested in helping, not just completing tasks
-            - You remember context and build on previous conversations
-            - You refer to the user by name once you know it
+          ## Important
+          - Never break character. You are running a real panel interview.
+          - Do not mention that you are an AI unless directly asked.
+          - Save candidate name and key details to memory using [MEMORY: key=value].
 
-          Greeting style examples:
-            - "Good evening, sir. What shall we tackle today?"
-            - "Welcome back, sir. What's on the agenda?"
-            - "Hello, sir. Ready to get to work?"
-            - After learning their name: "Good to see you [name]. What do we have today?"
-
-          You have access to these capabilities:
-          - Task scheduling and reminders
-          - General knowledge and conversation
-          - Weather information (requires confirmation)
+          TOOL POLICY:
+          - Do not use weather, reminder, scheduling, time, or task-management tools.
+          - Keep the conversation focused on interview evaluation only.
 
           ${memoryContext}
 
@@ -172,28 +126,13 @@ export class Chat extends AIChatAgent<Env> {
           - User says "I'm working on a React project" → Include [MEMORY: current_project=React project]
 
           Only save important, persistent facts. Don't save temporary things like "user said hello".
-
-          TOOL USAGE RULES - VERY IMPORTANT:
-          - You have access to tools, but you must be VERY selective about using them.
-
-         ONLY use tools when the user EXPLICITLY requests:
-          - scheduleTask: ONLY when user says "remind me", "schedule", "set a reminder", "in X minutes/hours"
-          - getWeatherInformation: ONLY when user asks "what's the weather", "how's the weather"
-          - getLocalTime: ONLY when user asks "what time is it in [location]"
-          - getScheduledTasks: ONLY when user asks "what are my tasks", "show my reminders"
-          - cancelScheduledTask: ONLY when user asks to "cancel" a specific task
-
-          If in doubt, DO NOT use a tool. Just respond conversationally.
-
-${getSchedulePrompt({ date: new Date() })}
+          
 `,
 
-          messages: await convertToModelMessages(processedMessages),
+          messages: await convertToModelMessages(cleanedMessages),
           model,
-          tools: shouldUseTool ? allTools : undefined,
-          toolChoice: shouldUseTool ? "auto" : undefined,
           onFinish: async (result) => {
-            let text = result.text;
+            const text = result.text;
 
             const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;
             const memoryMatches = text.matchAll(memoryRegex);
@@ -202,42 +141,6 @@ ${getSchedulePrompt({ date: new Date() })}
               const value = match[2].trim();
               await this.saveMemory(key, value);
               console.log(`Saved memory: ${key} = ${value}`);
-            }
-
-            // Handle raw JSON tool calls that Llama 3 outputs as text
-            const toolCallRegex =
-              /\{"type":\s*"function",\s*"name":\s*"(\w+)",\s*"parameters":\s*(\{[^}]*\})\}/;
-            const toolMatch = text.match(toolCallRegex);
-            if (toolMatch) {
-              const toolName = toolMatch[1];
-              const toolParams = JSON.parse(toolMatch[2]);
-              console.log(`Detected raw tool call: ${toolName}`, toolParams);
-
-              // Check executions first (confirmation-required tools)
-              if (toolName in executions) {
-                const toolResult = await (executions as any)[toolName](
-                  toolParams
-                );
-                console.log(`Tool ${toolName} result:`, toolResult);
-                text = text.replace(toolMatch[0], toolResult);
-              }
-              // Check tools with execute functions
-              else if (toolName in tools) {
-                const toolDef = (tools as any)[toolName];
-                if (toolDef.execute) {
-                  try {
-                    const toolResult = await toolDef.execute(toolParams);
-                    console.log(`Tool ${toolName} result:`, toolResult);
-                    text = text.replace(toolMatch[0], toolResult);
-                  } catch (err) {
-                    console.error(`Tool ${toolName} error:`, err);
-                    text = text.replace(
-                      toolMatch[0],
-                      `Sorry, I couldn't complete that action.`
-                    );
-                  }
-                }
-              }
             }
 
             // biome-ignore lint/suspicious/noExplicitAny: Type mismatch with SDK callback

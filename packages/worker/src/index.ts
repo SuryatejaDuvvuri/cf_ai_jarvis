@@ -40,19 +40,23 @@ export default {
 
     if (url.pathname === "/speak" && request.method === "POST") {
       try {
-        const { text } = (await request.json()) as { text?: string };
+        const { text, voice } = (await request.json()) as { text?: string; voice?: string };
         if (!text) {
           return Response.json({ error: "No text provided" }, { status: 400 });
         }
 
         const cleanText = text.replace(/\[MEMORY:[^\]]+\]/g, "").trim();
 
+        // Allowlist of valid Deepgram Aura speakers — one per panel agent
+        const allowedSpeakers = new Set([
+          "arcas", "asteria", "luna", "stella", "orion", "helios",
+          "orus", "perseus", "angus", "orpheus", "amalthea", "athena", "hera"
+        ]);
+        const speaker = voice && allowedSpeakers.has(voice) ? voice : "arcas";
+
         const result = await env.AI.run(
           "@cf/deepgram/aura-1",
-          {
-            text: cleanText,
-            speaker: "arcas"
-          },
+          { text: cleanText, speaker },
           { returnRawResponse: true }
         );
 
