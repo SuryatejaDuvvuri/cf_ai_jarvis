@@ -2,6 +2,11 @@ import type { JobRequisition } from "@panelai/shared";
 import { GreenhouseClient } from "./greenhouse.client.js";
 import { scoreCandidateForJob } from "./recruiter.scoring.js";
 
+export interface GreenhouseSyncSnapshot {
+  jobs: Awaited<ReturnType<GreenhouseClient["listJobs"]>>;
+  candidates: Awaited<ReturnType<GreenhouseClient["listCandidates"]>>;
+}
+
 export interface RecruiterCandidateProfile {
   name?: string;
   email?: string;
@@ -21,6 +26,20 @@ export interface ScoreCandidatePayload {
 }
 
 export async function syncGreenhouseReadOnly(apiKey: string) {
+  const snapshot = await syncGreenhouseWithData(apiKey);
+
+  return {
+    handled: true,
+    source: "greenhouse",
+    mode: "read-only",
+    jobsImported: snapshot.jobs.length,
+    candidatesImported: snapshot.candidates.length
+  };
+}
+
+export async function syncGreenhouseWithData(
+  apiKey: string
+): Promise<GreenhouseSyncSnapshot> {
   const greenhouse = new GreenhouseClient({ apiKey });
 
   const [jobs, candidates] = await Promise.all([
@@ -28,13 +47,7 @@ export async function syncGreenhouseReadOnly(apiKey: string) {
     greenhouse.listCandidates()
   ]);
 
-  return {
-    handled: true,
-    source: "greenhouse",
-    mode: "read-only",
-    jobsImported: jobs.length,
-    candidatesImported: candidates.length
-  };
+  return { jobs, candidates };
 }
 
 export function scoreCandidate(payload: ScoreCandidatePayload) {

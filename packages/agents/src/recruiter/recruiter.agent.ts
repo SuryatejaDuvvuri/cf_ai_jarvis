@@ -21,6 +21,7 @@ import type { AgentRole } from "@panelai/shared";
 import {
   scoreCandidate,
   syncGreenhouseReadOnly,
+  syncGreenhouseWithData,
   type ScoreCandidatePayload
 } from "./recruiter.tools.js";
 
@@ -72,6 +73,28 @@ ${candidateContext ? `\n## Candidate Context\n${candidateContext}` : ""}`;
       }
 
       return syncGreenhouseReadOnly(this.env.GREENHOUSE_API_KEY);
+    }
+
+    if (message.type === "sync-greenhouse-data") {
+      if (!this.env.GREENHOUSE_API_KEY) {
+        return {
+          handled: false,
+          error: "Missing GREENHOUSE_API_KEY binding."
+        };
+      }
+
+      const snapshot = await syncGreenhouseWithData(
+        this.env.GREENHOUSE_API_KEY
+      );
+      return {
+        handled: true,
+        source: "greenhouse",
+        mode: "read-only",
+        jobsImported: snapshot.jobs.length,
+        candidatesImported: snapshot.candidates.length,
+        jobs: snapshot.jobs,
+        candidates: snapshot.candidates
+      };
     }
 
     if (message.type === "score-candidate") {

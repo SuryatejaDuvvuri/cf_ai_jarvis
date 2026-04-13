@@ -9,6 +9,9 @@
  */
 
 import { AIChatAgent } from "@cloudflare/ai-chat";
+import { createWorkersAI } from "workers-ai-provider";
+import { createOpenAI } from "@ai-sdk/openai";
+import { generateText } from "ai";
 import type {
   AgentCard,
   AgentRole,
@@ -33,6 +36,10 @@ import { SharedMemoryClient } from "./memory/shared-memory.js";
 /** Environment with required bindings */
 export interface CoreAgentEnv extends Cloudflare.Env {
   AI: Ai;
+  AI_PROVIDER?: "workers-ai" | "openai-compatible" | "groq";
+  AI_MODEL?: string;
+  AI_BASE_URL?: string;
+  AI_API_KEY?: string;
   [key: string]: unknown;
 }
 
@@ -138,10 +145,113 @@ export abstract class CoreAgent<
   }
 
   /**
+   * Resolve the AI model using Workers AI binding
+   */
+  protected resolveModel() {
+    const env = this.env as Record<string, unknown>;
+    const rawProvider = (
+      (env.AI_PROVIDER as string) ?? "workers-ai"
+    ).toLowerCase();
+    const isWorkersAI = rawProvider === "workers-ai";
+
+    const modelName =
+      (env.AI_MODEL as string) ??
+      (isWorkersAI
+        ? "@cf/meta/llama-3.3-70b-instruct-fp8-fast"
+        : "llama-3.3-70b-versatile");
+
+    if (isWorkersAI) {
+      const workersAI = createWorkersAI({ binding: env.AI as Ai });
+      return workersAI(modelName as Parameters<typeof workersAI>[0]);
+    }
+
+    const apiKey = ((env.AI_API_KEY as string) ?? "").trim();
+    const configuredBaseUrl = ((env.AI_BASE_URL as string) ?? "").trim();
+    const baseURL =
+      configuredBaseUrl ||
+      (rawProvider === "groq" ? "https://api.groq.com/openai/v1" : "");
+
+    if (!apiKey) {
+      throw new Error(
+        "AI_API_KEY is required when AI_PROVIDER is not workers-ai."
+      );
+    }
+
+    if (!baseURL) {
+      throw new Error(
+        "AI_BASE_URL is required when AI_PROVIDER is openai-compatible."
+      );
+    }
+
+    const openai = createOpenAI({ apiKey, baseURL });
+    return openai.chat(modelName);
+  }
+
+  /**
+   * Return this agent's interview system prompt.
+   * Subclasses override this to give each specialist their own persona.
+   */
+  protected getInterviewSystemPrompt(_candidateContext?: string): string {
+    return "You are a professional interviewer conducting a job interview. Ask relevant questions and be helpful.";
+  }
+
+  /**
+   * Handle a /turn request — generate one interviewer response for the live chat.
+   * Returns JSON { text: string }.
+   */
+  private async handleInterviewTurn(request: Request): Promise<Response> {
+    try {
+      const body = (await request.json()) as {
+        messages: Array<{ role: "user" | "assistant"; content: string }>;
+        candidateContext?: string;
+      };
+      const model = this.resolveModel();
+      const systemPrompt = this.getInterviewSystemPrompt(body.candidateContext);
+
+      // Some OpenAI-compatible providers are strict about message content shapes.
+      // Build a plain transcript prompt for broad compatibility.
+      const transcript = (body.messages ?? [])
+        .map((message) => {
+          const speaker = message.role === "user" ? "Candidate" : "Panel";
+          return `${speaker}: ${message.content}`;
+        })
+        .join("\n\n")
+        .trim();
+
+      const prompt = transcript.length
+        ? `${transcript}\n\nContinue the interview naturally and respond as the interviewer for this turn.`
+        : "Begin this interview turn with one concise, role-appropriate interviewer question.";
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 25_000);
+      try {
+        const result = await generateText({
+          model,
+          system: systemPrompt,
+          prompt,
+          abortSignal: controller.signal,
+          maxOutputTokens: 400
+        });
+        return Response.json({ text: result.text });
+      } finally {
+        clearTimeout(timeoutId);
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return Response.json({ error: message }, { status: 500 });
+    }
+  }
+
+  /**
    * Override fetch to handle A2A-style requests
    */
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+
+    // Handle interview turn (live chat delegation)
+    if (url.pathname === "/turn" && request.method === "POST") {
+      return this.handleInterviewTurn(request);
+    }
 
     // Handle delegation requests
     if (url.pathname === "/delegate" && request.method === "POST") {
