@@ -17,9 +17,12 @@ import {
   type CoreAgentEnv,
   type DelegationMessage
 } from "@panelai/core";
-import type { AgentRole, JobRequisition } from "@panelai/shared";
-import { GreenhouseClient } from "./greenhouse.client.js";
-import { scoreCandidateForJob } from "./recruiter.scoring.js";
+import type { AgentRole } from "@panelai/shared";
+import {
+  scoreCandidate,
+  syncGreenhouseReadOnly,
+  type ScoreCandidatePayload
+} from "./recruiter.tools.js";
 
 interface RecruiterEnv extends CoreAgentEnv {
   GREENHOUSE_API_KEY: string;
@@ -28,6 +31,33 @@ interface RecruiterEnv extends CoreAgentEnv {
 export class RecruiterAgent extends CoreAgent<RecruiterEnv> {
   protected get role(): AgentRole {
     return "recruiter";
+  }
+
+  protected override getInterviewSystemPrompt(
+    candidateContext?: string
+  ): string {
+    return `You are Sarah Park, the HR & Recruiter at PanelAI. You cover the human side of the interview — background, motivation, logistics, expectations, and compensation alignment.
+
+## Your Persona
+- Speak as Sarah Park, but do not re-introduce yourself after the first turn in this interview
+- Professional, approachable, and genuinely interested in the candidate's story
+- Ask clear, direct questions without being intimidating
+- Note any red flags around logistics, expectations, or compensation misalignment
+
+## Your Focus Areas
+- Career trajectory and motivation for applying
+- Expectations for the role and team
+- Logistics: location, start date, work authorization
+- Compensation expectations and alignment
+- Why they're interested in this company specifically
+
+## Rules
+- Ask exactly ONE HR/recruiting question per response
+- Do not ask technical or deep behavioral questions (STAR format)
+- Never reveal you are an AI unless directly asked
+- Stay in character as Sarah Park throughout
+
+${candidateContext ? `\n## Candidate Context\n${candidateContext}` : ""}`;
   }
 
   protected override async onDelegation(
@@ -41,56 +71,11 @@ export class RecruiterAgent extends CoreAgent<RecruiterEnv> {
         };
       }
 
-      const greenhouse = new GreenhouseClient({
-        apiKey: this.env.GREENHOUSE_API_KEY
-      });
-
-      const [jobs, candidates] = await Promise.all([
-        greenhouse.listJobs(),
-        greenhouse.listCandidates()
-      ]);
-
-      return {
-        handled: true,
-        source: "greenhouse",
-        mode: "read-only",
-        jobsImported: jobs.length,
-        candidatesImported: candidates.length
-      };
+      return syncGreenhouseReadOnly(this.env.GREENHOUSE_API_KEY);
     }
 
     if (message.type === "score-candidate") {
-      const payload = message.payload as {
-        candidateId: string;
-        resumeText: string;
-        profile?: {
-          name?: string;
-          email?: string;
-          phone?: string;
-          skills?: string[];
-          yearsExperience?: number;
-          projects?: string[];
-          certifications?: string[];
-          workAuthorization?: "authorized" | "requires-sponsorship" | "unknown";
-        };
-        job: JobRequisition;
-      };
-
-      const artifact = scoreCandidateForJob({
-        candidateId: payload.candidateId,
-        jobId: payload.job.id,
-        resumeText: payload.resumeText,
-        profile: payload.profile,
-        job: payload.job
-      });
-
-      return {
-        handled: true,
-        recommendation: artifact.recommendationBand,
-        score: artifact.weightedScore,
-        requiresApproval: artifact.requiresApproval,
-        artifact
-      };
+      return scoreCandidate(message.payload as ScoreCandidatePayload);
     }
 
     return super.onDelegation(message);

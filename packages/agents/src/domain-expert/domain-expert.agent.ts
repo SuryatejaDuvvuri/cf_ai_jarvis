@@ -13,73 +13,51 @@
  */
 
 import { CoreAgent, type DelegationMessage } from "@panelai/core";
-import type {
-  AgentRole,
-  InterviewerArtifact,
-  RecommendationLevel
-} from "@panelai/shared";
+import type { AgentRole } from "@panelai/shared";
+import {
+  conductDomainInterview,
+  type ConductDomainInterviewPayload
+} from "./domain-expert.tools.js";
 
 export class DomainExpertAgent extends CoreAgent {
   protected get role(): AgentRole {
     return "domain-expert";
   }
 
+  protected override getInterviewSystemPrompt(
+    candidateContext?: string
+  ): string {
+    return `You are James Liu, the Domain Expert Interviewer at PanelAI. You dive deep into domain-specific knowledge relevant to the role — the real-world experience and nuanced expertise that separates strong candidates from great ones.
+
+## Your Persona
+- Speak as James Liu, but do not re-introduce yourself after the first turn in this interview
+- Thoughtful, knowledgeable, direct
+- Ask about practical application, not just theoretical knowledge
+- Probe for specific examples and concrete outcomes
+
+## Your Focus Areas
+- Role-specific domain knowledge (industry, tools, methodologies)
+- Real-world application of expertise
+- Depth vs. breadth of domain experience
+- Lessons learned from past domain-specific projects or challenges
+
+## Rules
+- Ask exactly ONE domain-specific question per response
+- Do not ask generic technical or HR questions
+- Never reveal you are an AI unless directly asked
+- Stay in character as James Liu throughout
+
+${candidateContext ? `\n## Candidate Context\n${candidateContext}` : ""}`;
+  }
+
   protected override async onDelegation(
     message: DelegationMessage
   ): Promise<unknown> {
     if (message.type === "conduct-domain-interview") {
-      const payload = message.payload as {
-        interviewId?: string;
-        candidateId?: string;
-      };
-      const recommendation: RecommendationLevel = "discuss";
-      const artifact: InterviewerArtifact = {
-        agentId: this.card.id,
-        candidateId: payload.candidateId ?? "unknown-candidate",
-        interviewId: payload.interviewId ?? "unknown-interview",
-        timestamp: new Date().toISOString(),
-        scores: {
-          domainDepth: {
-            score: 3,
-            jdRequirement: "Domain-specific architecture and execution depth",
-            evidence:
-              "Candidate has practical domain exposure but fewer end-to-end ownership examples.",
-            justification:
-              "Viable baseline, but panel should probe depth for this role’s specialization."
-          }
-        },
-        strengths: [
-          {
-            point: "Good foundational domain understanding",
-            evidence: "Can explain key concepts and common pitfalls clearly"
-          }
-        ],
-        concerns: [
-          {
-            point: "Limited evidence of leading complex domain initiatives",
-            evidence: "Examples focused on contribution rather than ownership"
-          }
-        ],
-        recommendation,
-        recommendationRationale:
-          "Borderline domain depth; recommend panel deliberation before final decision.",
-        requiresApproval: true,
-        questionsAsked: [
-          {
-            question:
-              "How would you approach a high-risk domain-specific failure mode?",
-            responseSummary:
-              "Candidate outlined mitigation workflow but with limited prior ownership examples."
-          }
-        ]
-      };
-
-      return {
-        handled: true,
-        recommendation,
-        summary: "Domain interview completed",
-        artifact
-      };
+      return conductDomainInterview(
+        this.card.id,
+        message.payload as ConductDomainInterviewPayload
+      );
     }
 
     return super.onDelegation(message);

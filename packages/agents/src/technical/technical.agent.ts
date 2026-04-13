@@ -13,83 +13,52 @@
  */
 
 import { CoreAgent, type DelegationMessage } from "@panelai/core";
-import type {
-  AgentRole,
-  InterviewerArtifact,
-  RecommendationLevel
-} from "@panelai/shared";
+import type { AgentRole } from "@panelai/shared";
+import {
+  conductTechnicalInterview,
+  type ConductTechnicalInterviewPayload
+} from "./technical.tools.js";
 
 export class TechnicalInterviewerAgent extends CoreAgent {
   protected get role(): AgentRole {
     return "technical";
   }
 
+  protected override getInterviewSystemPrompt(
+    candidateContext?: string
+  ): string {
+    return `You are Dr. Raj Patel, the Technical Interviewer at PanelAI. You assess candidates on coding, system design, architecture, and technical problem-solving.
+
+## Your Persona
+- Speak as Dr. Raj Patel, but do not re-introduce yourself after the first turn in this interview
+- Be sharp, precise, and intellectually curious
+- Probe for depth: don't accept surface-level answers
+- Ask follow-up questions if an answer is vague or incomplete
+- Keep responses concise — this is a conversation, not a lecture
+
+## Your Focus Areas
+- Coding & algorithms (time/space complexity, clean code)
+- System design (scalability, trade-offs, architecture choices)
+- Debugging approach and problem-solving process
+- Technical depth appropriate to the role level
+
+## Rules
+- Ask exactly ONE technical question per response
+- Do not ask HR, behavioral, or culture questions
+- Never reveal you are an AI unless directly asked
+- Stay in character as Dr. Raj Patel throughout
+
+${candidateContext ? `\n## Candidate Context\n${candidateContext}` : ""}`;
+  }
+
   protected override async onDelegation(
     message: DelegationMessage
   ): Promise<unknown> {
     if (message.type === "conduct-technical-interview") {
-      const payload = message.payload as {
-        interviewId?: string;
-        candidateId?: string;
-      };
-      const recommendation: RecommendationLevel = "advance";
-      const artifact: InterviewerArtifact = {
-        agentId: this.card.id,
-        candidateId: payload.candidateId ?? "unknown-candidate",
-        interviewId: payload.interviewId ?? "unknown-interview",
-        timestamp: new Date().toISOString(),
-        scores: {
-          technicalDepth: {
-            score: 4,
-            jdRequirement:
-              "Demonstrates practical coding and architecture depth",
-            evidence:
-              "Candidate described implementation tradeoffs and debugging process clearly.",
-            justification:
-              "Strong technical signal with good problem decomposition under constraints."
-          },
-          problemSolving: {
-            score: 4,
-            jdRequirement: "Structured problem-solving and reasoning",
-            evidence:
-              "Approach was broken into assumptions, options, and validation checks.",
-            justification:
-              "Shows repeatable engineering reasoning instead of ad-hoc responses."
-          }
-        },
-        strengths: [
-          {
-            point: "Strong implementation reasoning",
-            evidence: "Can explain tradeoffs and alternatives"
-          }
-        ],
-        concerns: [
-          {
-            point: "Could deepen system design breadth for scale scenarios",
-            evidence:
-              "Focused more on feature-level than platform-level tradeoffs"
-          }
-        ],
-        recommendation,
-        recommendationRationale:
-          "Technical baseline is solid for moving forward with normal risk.",
-        requiresApproval: true,
-        questionsAsked: [
-          {
-            question:
-              "Describe a difficult production issue you fixed recently.",
-            responseSummary:
-              "Candidate walked through hypothesis-driven debugging and mitigation."
-          }
-        ]
-      };
-
-      return {
-        handled: true,
-        recommendation,
-        summary: "Technical interview completed",
-        artifact
-      };
+      return conductTechnicalInterview(
+        this.card.id,
+        message.payload as ConductTechnicalInterviewPayload
+      );
     }
 
     return super.onDelegation(message);
