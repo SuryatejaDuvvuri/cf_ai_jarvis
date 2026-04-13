@@ -164,4 +164,116 @@ describe("Chat worker", () => {
       "No combined scorecard found for interview."
     );
   });
+
+  it.skip("executes jobs-to-decision route flow end-to-end", async () => {
+    const jobId = `job-e2e-${crypto.randomUUID()}`;
+    const candidateId = `candidate-e2e-${crypto.randomUUID()}`;
+    const interviewId = `interview-e2e-${crypto.randomUUID()}`;
+
+    const callWorker = async (request: Request) => {
+      const ctx = createExecutionContext();
+      const response = await worker.fetch(request, env, ctx);
+      await waitOnExecutionContext(ctx);
+      return response;
+    };
+
+    const createJobResponse = await callWorker(
+      new Request("http://example.com/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: jobId,
+          title: "Senior Frontend Engineer",
+          department: "Engineering",
+          location: "Remote",
+          remotePolicy: "remote",
+          employmentType: "full-time",
+          level: "senior",
+          description: "Build and ship user-facing product features.",
+          requiredSkills: ["TypeScript", "React"],
+          preferredSkills: ["Cloudflare Workers"],
+          minYearsExperience: 5,
+          hiringManager: "hm-1",
+          recruiters: ["rec-1"],
+          status: "open"
+        })
+      })
+    );
+    expect(createJobResponse.status).toBe(201);
+
+    const addCandidateResponse = await callWorker(
+      new Request(`http://example.com/api/jobs/${jobId}/candidates`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          candidateId,
+          resumeText:
+            "Built production React apps with strong collaboration and ownership.",
+          profile: {
+            name: "Taylor",
+            skills: ["TypeScript", "React"],
+            yearsExperience: 6,
+            projects: ["Scaled design system"],
+            workAuthorization: "authorized"
+          }
+        })
+      })
+    );
+    expect(addCandidateResponse.status).toBe(201);
+    const candidate = (await addCandidateResponse.json()) as {
+      id: string;
+      status: string;
+      recruiterArtifact?: { recommendationBand?: string };
+    };
+    expect(candidate.id).toBe(candidateId);
+    expect(candidate.recruiterArtifact).toBeTruthy();
+
+    const createInterviewResponse = await callWorker(
+      new Request("http://example.com/api/interviews", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ interviewId, jobId, candidateId })
+      })
+    );
+    expect(createInterviewResponse.status).toBe(201);
+
+    const listInterviewsResponse = await callWorker(
+      new Request("http://example.com/api/interviews")
+    );
+    expect(listInterviewsResponse.status).toBe(200);
+    const interviews = (await listInterviewsResponse.json()) as Array<{
+      id: string;
+    }>;
+    expect(interviews.some((interview) => interview.id === interviewId)).toBe(
+      true
+    );
+
+    const decisionResponse = await callWorker(
+      new Request(`http://example.com/api/interviews/${interviewId}/decision`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          decision: "hire",
+          decidedBy: "hm-1",
+          notes: "Great panel outcome."
+        })
+      })
+    );
+    expect(decisionResponse.status).toBe(200);
+
+    const interviewResponse = await callWorker(
+      new Request(`http://example.com/api/interviews/${interviewId}`)
+    );
+    expect(interviewResponse.status).toBe(200);
+    const interview = (await interviewResponse.json()) as {
+      id: string;
+      status: string;
+      phase: string;
+      decision?: string;
+    };
+    expect(interview.id).toBe(interviewId);
+    expect(interview.status).toBe("completed");
+    expect(interview.phase).toBe("completed");
+    expect(interview.decision).toBe("hire");
+  });
 });

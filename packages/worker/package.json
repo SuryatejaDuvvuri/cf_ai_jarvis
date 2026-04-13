@@ -4,9 +4,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "vite dev",
+    "dev": "vite dev --force",
     "build": "vite build",
-    "check": "prettier . --check && biome lint src __tests__ env.d.ts && tsc --noEmit",
+    "check": "prettier \"{src,__tests__}/**/*.{ts,tsx}\" env.d.ts package.json tsconfig.json vite.config.ts vitest.config.ts wrangler.jsonc wrangler.staging.jsonc wrangler.production.jsonc --check && biome lint src __tests__ env.d.ts && tsc --noEmit",
     "test": "vitest run",
     "deploy": "vite build && wrangler deploy",
     "deploy:staging": "vite build && wrangler deploy --config wrangler.staging.jsonc",

@@ -5,7 +5,7 @@
  */
 interface Env {
   AI: Ai;
-  AI_PROVIDER?: "workers-ai" | "openai-compatible";
+  AI_PROVIDER?: "workers-ai" | "openai-compatible" | "groq";
   AI_MODEL?: string;
   AI_BASE_URL?: string;
   AI_API_KEY?: string;

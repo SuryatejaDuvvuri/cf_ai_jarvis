@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@panelai/shared": "*",
-    "@panelai/core": "*"
+    "@panelai/core": "*",
+    "@ai-sdk/openai": "*"
   },
   "devDependencies": {
     "typescript": "^5.9.3"
