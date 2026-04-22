@@ -13,15 +13,90 @@
  */
 
 import { CoreAgent, type DelegationMessage } from "@panelai/core";
-import type { AgentRole } from "@panelai/shared";
+import { generateText } from "ai";
+import type { AgentRole, InterviewerArtifact } from "@panelai/shared";
+import {
+  buildArtifactFromDraft,
+  formatTranscriptForPrompt,
+  parseJsonObjectFromText,
+  serializeContext,
+  type CriterionTemplate
+} from "../interview/evaluation.js";
 import {
   conductDomainInterview,
   type ConductDomainInterviewPayload
 } from "./domain-expert.tools.js";
 
+const DOMAIN_CRITERIA: CriterionTemplate[] = [
+  {
+    key: "domainDepth",
+    jdRequirement: "Domain-specific architecture and execution depth"
+  }
+];
+
 export class DomainExpertAgent extends CoreAgent {
   protected get role(): AgentRole {
     return "domain-expert";
+  }
+
+  private async scoreDelegatedInterview(
+    payload: ConductDomainInterviewPayload
+  ): Promise<InterviewerArtifact> {
+    const fallback = conductDomainInterview(this.card.id, payload).artifact;
+    const transcript = formatTranscriptForPrompt(payload.transcript);
+
+    const result = await generateText({
+      model: this.resolveModel(),
+      maxOutputTokens: 350,
+      maxRetries: 0,
+      system: `You are James Liu evaluating a completed domain-expert interview segment.
+
+Return ONLY valid JSON with this structure:
+{
+  "scores": {
+    "domainDepth": { "score": 1-5, "jdRequirement": "...", "evidence": "...", "justification": "..." }
+  },
+  "strengths": [{ "point": "...", "evidence": "..." }],
+  "concerns": [{ "point": "...", "evidence": "..." }],
+  "recommendation": "strong-advance|advance|discuss|reject",
+  "recommendationRationale": "...",
+  "questionsAsked": [{ "question": "...", "responseSummary": "...", "followUps": ["..."] }],
+  "notes": "optional"
+}
+
+Rules:
+- Use ONLY transcript/context evidence.
+- If evidence is weak, score lower and explicitly call out missing proof.
+- Do not include markdown code fences or extra commentary.`,
+      prompt: `Interview ID: ${payload.interviewId ?? "unknown-interview"}
+Candidate ID: ${payload.candidateId ?? "unknown-candidate"}
+
+Candidate profile:
+${serializeContext(payload.candidateProfile)}
+
+Job requisition:
+${serializeContext(payload.jobRequisition)}
+
+Transcript:
+${transcript}`
+    });
+
+    const reflectedDraftText = await this.reflect({
+      draft: result.text,
+      taskContext: `Domain artifact for interview ${payload.interviewId ?? "unknown"} and candidate ${payload.candidateId ?? "unknown"}. Transcript evidence must drive scores.`,
+      outputContract:
+        "Return valid JSON with keys: scores.domainDepth, strengths[], concerns[], recommendation, recommendationRationale, questionsAsked[], notes.",
+      maxIterations: 1
+    });
+
+    const draft = parseJsonObjectFromText(reflectedDraftText);
+    return buildArtifactFromDraft({
+      agentId: this.card.id,
+      payload,
+      criteria: DOMAIN_CRITERIA,
+      fallback,
+      draft
+    });
   }
 
   protected override getInterviewSystemPrompt(
@@ -54,10 +129,36 @@ ${candidateContext ? `\n## Candidate Context\n${candidateContext}` : ""}`;
     message: DelegationMessage
   ): Promise<unknown> {
     if (message.type === "conduct-domain-interview") {
-      return conductDomainInterview(
-        this.card.id,
-        message.payload as ConductDomainInterviewPayload
+      const payload = message.payload as ConductDomainInterviewPayload;
+      await this.logActivity(
+        payload.interviewId,
+        "scoring-started",
+        "James Liu is evaluating domain depth…"
       );
+      try {
+        const artifact = await this.scoreDelegatedInterview(payload);
+        await this.logActivity(
+          payload.interviewId,
+          "score-produced",
+          `James Liu recommends: ${artifact.recommendation}.`,
+          { recommendation: artifact.recommendation, scores: artifact.scores }
+        );
+        return {
+          handled: true,
+          recommendation: artifact.recommendation,
+          summary: "Domain interview completed",
+          artifact
+        };
+      } catch (error) {
+        console.error("Domain delegated scoring failed:", error);
+        await this.logActivity(
+          payload.interviewId,
+          "delegation-failed",
+          "Domain scoring fell back to heuristic rubric.",
+          { error: String(error) }
+        );
+        return conductDomainInterview(this.card.id, payload);
+      }
     }
 
     return super.onDelegation(message);

@@ -27,11 +27,16 @@ import {
   completeTask,
   failTask,
   requestInput,
-  getTasksAwaitingInput
+  getTasksAwaitingInput,
+  getTask,
+  provideInput
 } from "./a2a/task-manager.js";
 import { delegateToAgent, type DelegationResult } from "./a2a/delegation.js";
 import { PrivateMemoryImpl } from "./memory/private-memory.js";
-import { SharedMemoryClient } from "./memory/shared-memory.js";
+import {
+  SharedMemoryClient,
+  type ActivityEventType
+} from "./memory/shared-memory.js";
 
 /** Environment with required bindings */
 export interface CoreAgentEnv extends Cloudflare.Env {
@@ -57,6 +62,12 @@ export interface DelegationMessage<TPayload = unknown> {
   payload: TPayload;
   from: AgentRef;
   contextId?: string;
+}
+
+interface ReflectionReview {
+  needsRevision: boolean;
+  revisedDraft?: string;
+  rationale?: string;
 }
 
 /**
@@ -187,6 +198,96 @@ export abstract class CoreAgent<
     return openai.chat(modelName);
   }
 
+  private parseReflectionReview(rawText: string): ReflectionReview | null {
+    const fencedMatch = rawText.match(/```(?:json)?\s*([\s\S]*?)```/i);
+    const candidateJson = fencedMatch ? fencedMatch[1] : rawText;
+    const start = candidateJson.indexOf("{");
+    const end = candidateJson.lastIndexOf("}");
+    if (start === -1 || end === -1 || end <= start) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        candidateJson.slice(start, end + 1)
+      ) as Partial<{
+        needsRevision: unknown;
+        revisedDraft: unknown;
+        rationale: unknown;
+      }>;
+      if (typeof parsed.needsRevision !== "boolean") {
+        return null;
+      }
+      return {
+        needsRevision: parsed.needsRevision,
+        revisedDraft:
+          typeof parsed.revisedDraft === "string"
+            ? parsed.revisedDraft
+            : undefined,
+        rationale:
+          typeof parsed.rationale === "string" ? parsed.rationale : undefined
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  /**
+   * Reflection loop for quality-improving draft outputs.
+   * Runs at most maxIterations (default 2) and returns the best draft text.
+   */
+  protected async reflect(options: {
+    draft: string;
+    taskContext: string;
+    outputContract: string;
+    maxIterations?: number;
+  }): Promise<string> {
+    const maxIterations = Math.max(1, options.maxIterations ?? 2);
+    let currentDraft = options.draft;
+
+    for (let iteration = 0; iteration < maxIterations; iteration += 1) {
+      try {
+        const review = await generateText({
+          model: this.resolveModel(),
+          temperature: 0,
+          maxOutputTokens: 350,
+          maxRetries: 0,
+          system: `You are an internal quality reviewer for interview artifacts.
+Return ONLY valid JSON:
+{
+  "needsRevision": boolean,
+  "revisedDraft": "string (required if needsRevision=true)",
+  "rationale": "short explanation"
+}
+Rules:
+- Keep the same output format contract exactly.
+- If draft already satisfies the contract and evidence quality, set needsRevision=false.
+- If revising, return a complete revised draft in revisedDraft (not a diff).`,
+          prompt: `Task context:
+${options.taskContext}
+
+Output contract:
+${options.outputContract}
+
+Current draft:
+${currentDraft}`
+        });
+
+        const parsed = this.parseReflectionReview(review.text);
+        if (!parsed || !parsed.needsRevision || !parsed.revisedDraft?.trim()) {
+          break;
+        }
+
+        currentDraft = parsed.revisedDraft.trim();
+      } catch (error) {
+        console.warn("Reflection step failed, returning latest draft:", error);
+        break;
+      }
+    }
+
+    return currentDraft;
+  }
+
   /**
    * Return this agent's interview system prompt.
    * Subclasses override this to give each specialist their own persona.
@@ -204,9 +305,17 @@ export abstract class CoreAgent<
       const body = (await request.json()) as {
         messages: Array<{ role: "user" | "assistant"; content: string }>;
         candidateContext?: string;
+        interviewId?: string;
       };
       const model = this.resolveModel();
       const systemPrompt = this.getInterviewSystemPrompt(body.candidateContext);
+
+      await this.logActivity(
+        body.interviewId,
+        "turn-started",
+        `${this.card.name} is thinking of a reply…`,
+        { turnCount: body.messages?.length ?? 0 }
+      );
 
       // Some OpenAI-compatible providers are strict about message content shapes.
       // Build a plain transcript prompt for broad compatibility.
@@ -232,6 +341,12 @@ export abstract class CoreAgent<
           abortSignal: controller.signal,
           maxOutputTokens: 400
         });
+        await this.logActivity(
+          body.interviewId,
+          "turn-produced",
+          `${this.card.name}: "${result.text.slice(0, 140)}${result.text.length > 140 ? "…" : ""}"`,
+          { length: result.text.length }
+        );
         return Response.json({ text: result.text });
       } finally {
         clearTimeout(timeoutId);
@@ -272,6 +387,49 @@ export abstract class CoreAgent<
     if (url.pathname === "/tasks/pending" && request.method === "GET") {
       const tasks = getTasksAwaitingInput();
       return Response.json(tasks);
+    }
+
+    // Resolve a human approval/input gate for a pending task.
+    const taskResolveMatch = url.pathname.match(/^\/tasks\/([^/]+)\/resolve$/);
+    if (taskResolveMatch && request.method === "POST") {
+      const taskId = decodeURIComponent(taskResolveMatch[1]);
+      const task = getTask(taskId);
+      if (!task) {
+        return Response.json({ error: "Task not found" }, { status: 404 });
+      }
+      if (task.state !== "input-required") {
+        return Response.json(
+          { error: `Task is not awaiting input (state: ${task.state})` },
+          { status: 400 }
+        );
+      }
+
+      const body = (await request.json().catch(() => ({}))) as {
+        approved?: boolean;
+        choice?: string;
+        notes?: string;
+      };
+
+      const decision = Boolean(body.approved);
+      const resolvedChoice =
+        body.choice?.trim() || (decision ? "approve" : "reject");
+
+      provideInput(taskId, {
+        approved: decision,
+        choice: resolvedChoice,
+        notes: body.notes
+      });
+      completeTask(taskId, {
+        approved: decision,
+        choice: resolvedChoice,
+        notes: body.notes
+      });
+
+      const updated = getTask(taskId);
+      return Response.json({
+        success: true,
+        task: updated
+      });
     }
 
     // Fallback to default AIChatAgent handling
@@ -528,6 +686,31 @@ export abstract class CoreAgent<
         question,
         this.card.id
       );
+    }
+  }
+
+  /**
+   * Log a user-visible activity event to shared memory so the Agent Office
+   * panel can render what this agent is doing in real time.
+   * Silently no-ops if shared memory or interviewId is missing.
+   */
+  protected async logActivity(
+    interviewId: string | undefined,
+    type: ActivityEventType,
+    summary: string,
+    metadata?: Record<string, unknown>
+  ): Promise<void> {
+    if (!interviewId || !this.sharedMemory) return;
+    try {
+      await this.sharedMemory.addActivity(interviewId, {
+        agentId: this.card.id,
+        agentRole: this.role,
+        type,
+        summary,
+        metadata
+      });
+    } catch (error) {
+      console.warn(`logActivity failed (${type}):`, error);
     }
   }
 
