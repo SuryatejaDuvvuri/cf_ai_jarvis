@@ -51,7 +51,8 @@ const SPEAKER_BINDING: Partial<Record<PanelSpeakerId, string>> = {
   hr: "RECRUITER",
   technical: "TECHNICAL_INTERVIEWER",
   culture: "CULTURE_INTERVIEWER",
-  domain: "DOMAIN_EXPERT"
+  domain: "DOMAIN_EXPERT",
+  behavioral: "BEHAVIORAL_INTERVIEWER"
 };
 
 const PANEL_SPEAKERS: Record<PanelSpeakerId, { name: string }> = {
@@ -291,6 +292,12 @@ interface QueuedPanelFollowUp {
   createdAt: string;
 }
 
+interface LastResponseAssessment {
+  addressed: boolean;
+  depth: "thin" | "adequate";
+  reason: string;
+}
+
 /**
  * Chat Agent — backs the candidate-facing panel interview UI.
  * Plays the role of the PanelAI interview panel (orchestrator + 5 specialists).
@@ -332,7 +339,7 @@ export class Chat extends AIChatAgent<JarvisEnv> {
   }
 
   private looksLikeClosingLanguage(text: string): boolean {
-    return /\b(before we conclude|as we conclude|to conclude|wrap up|wrap-up|end this interview|thanks? for your time|panel will deliberate|we(?:'| )?ll deliberate|do you have any questions for the panel|any questions for the panel)\b/i.test(
+    return /\b(before we conclude|as we conclude|to conclude|wrap up|wrap-up|end this interview|thanks? for your time|panel will deliberate|we(?:'| )?ll deliberate|that(?:'| i)?s all the questions we have for now|that is all the questions we have for now|do you have any questions for the panel|any questions for the panel)\b/i.test(
       text
     );
   }
@@ -447,6 +454,170 @@ export class Chat extends AIChatAgent<JarvisEnv> {
     return lastUser ? getMessageText(lastUser).toLowerCase() : "";
   }
 
+  private getLatestUserRawText(messages: UIMessage[]): string {
+    const lastUser = [...messages]
+      .reverse()
+      .find((message) => message.role === "user");
+    return lastUser ? getMessageText(lastUser).trim() : "";
+  }
+
+  private getLastAssistantQuestion(messages: UIMessage[]): string | null {
+    const assistantMessages = [...messages]
+      .reverse()
+      .filter((message) => message.role === "assistant");
+
+    for (const message of assistantMessages) {
+      const text = getMessageText(message);
+      if (!text.includes("?")) {
+        continue;
+      }
+
+      const lines = text
+        .split(/\r?\n/)
+        .map((line) => line.trim())
+        .filter((line) => line.length > 0);
+
+      for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const line = lines[i];
+        if (line.includes("?")) {
+          return line;
+        }
+      }
+
+      const sentences = text
+        .split(/(?<=[.?!])\s+/)
+        .map((sentence) => sentence.trim())
+        .filter((sentence) => sentence.length > 0);
+      const fallbackQuestion = [...sentences]
+        .reverse()
+        .find((sentence) => sentence.includes("?"));
+      if (fallbackQuestion) {
+        return fallbackQuestion;
+      }
+    }
+
+    return null;
+  }
+
+  private parseAssessmentFromModel(raw: string): LastResponseAssessment | null {
+    const jsonMatch = raw.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(
+        jsonMatch[0]
+      ) as Partial<LastResponseAssessment>;
+      if (
+        typeof parsed.addressed !== "boolean" ||
+        (parsed.depth !== "thin" && parsed.depth !== "adequate")
+      ) {
+        return null;
+      }
+
+      return {
+        addressed: parsed.addressed,
+        depth: parsed.depth,
+        reason:
+          typeof parsed.reason === "string" && parsed.reason.trim().length > 0
+            ? parsed.reason.trim()
+            : "model-evaluated"
+      };
+    } catch (_error) {
+      return null;
+    }
+  }
+
+  private async evaluateLastResponse(
+    messages: UIMessage[]
+  ): Promise<LastResponseAssessment> {
+    const answer = this.getLatestUserRawText(messages);
+    const priorQuestion = this.getLastAssistantQuestion(messages);
+
+    if (!answer) {
+      return { addressed: true, depth: "adequate", reason: "no-answer" };
+    }
+
+    const normalizedAnswer = answer.toLowerCase();
+    if (
+      /\b(i\s*(do not|don't)\s*know|not sure|no idea|idk|can't remember|cannot remember|unsure)\b/.test(
+        normalizedAnswer
+      )
+    ) {
+      return {
+        addressed: false,
+        depth: "thin",
+        reason: "explicit-non-answer"
+      };
+    }
+
+    const answerWordCount = answer
+      .split(/\s+/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0).length;
+
+    if (answerWordCount <= 3) {
+      return {
+        addressed: false,
+        depth: "thin",
+        reason: "too-short"
+      };
+    }
+
+    if (!priorQuestion) {
+      return {
+        addressed: true,
+        depth: "adequate",
+        reason: "no-prior-question"
+      };
+    }
+
+    try {
+      const evaluation = await generateText({
+        model: this.resolveModel(),
+        temperature: 0,
+        maxOutputTokens: 140,
+        system: `You evaluate interview response quality.
+Return only strict JSON with keys:
+- addressed: boolean
+- depth: "thin" | "adequate"
+- reason: short string
+Rules:
+- If candidate dodges, says "I don't know", or does not answer the asked question => addressed=false and depth="thin".
+- If answer is very brief/vague without details => depth="thin".
+- Otherwise addressed=true and depth="adequate".`,
+        prompt: `Question asked by panel: ${priorQuestion}
+Candidate response: ${answer}`
+      });
+
+      const parsed = this.parseAssessmentFromModel(evaluation.text);
+      if (parsed) {
+        return parsed;
+      }
+    } catch (error) {
+      console.error(
+        "Last-response evaluation failed, using heuristic fallback:",
+        error
+      );
+    }
+
+    // Heuristic fallback when model evaluation fails.
+    if (answerWordCount < 12) {
+      return {
+        addressed: false,
+        depth: "thin",
+        reason: "heuristic-thin-response"
+      };
+    }
+
+    return {
+      addressed: true,
+      depth: "adequate",
+      reason: "heuristic-adequate"
+    };
+  }
+
   private toSimpleMessages(messages: UIMessage[]): SimpleTurnMessage[] {
     return messages
       .filter(
@@ -516,6 +687,18 @@ export class Chat extends AIChatAgent<JarvisEnv> {
       .filter(
         (line) =>
           !/^\(?\s*(?:the\s+)?candidate\s+(?:responds?|answers?)\b/i.test(line)
+      )
+      .filter(
+        (line) =>
+          !/^\[.*(?:each\s+panel\s+member|panel\s+members|candidate\s+response|candidate\s+answers?|panel\s+response).*\]$/i.test(
+            line
+          )
+      )
+      .filter(
+        (line) =>
+          !/^\(.*(?:each\s+panel\s+member|panel\s+members|candidate\s+response|candidate\s+answers?|panel\s+response).*\)$/i.test(
+            line
+          )
       )
       .join(" ")
       .trim();
@@ -627,7 +810,7 @@ export class Chat extends AIChatAgent<JarvisEnv> {
     return `${currentName}: Building on ${previousName}'s question, ${content}`;
   }
 
-  private choosePanelRoute(messages: UIMessage[]): PanelRoute {
+  private async choosePanelRoute(messages: UIMessage[]): Promise<PanelRoute> {
     const assistantMessages = messages.filter(
       (message) => message.role === "assistant"
     );
@@ -697,6 +880,8 @@ export class Chat extends AIChatAgent<JarvisEnv> {
       behavioral: scoreKeywords(userText, TOPIC_KEYWORDS.behavioral)
     };
 
+    const lastResponseAssessment = await this.evaluateLastResponse(messages);
+
     const pendingSpecialists = REQUIRED_SPECIALISTS.filter(
       (speaker) => coverage[speaker] === 0
     );
@@ -728,6 +913,20 @@ export class Chat extends AIChatAgent<JarvisEnv> {
           : allSpecialistsCovered && closingIntent
             ? "candidate-ready-to-wrap"
             : "coverage-threshold-reached"
+      };
+    }
+
+    if (
+      lastSpecialist &&
+      !closingIntent &&
+      (!lastResponseAssessment.addressed ||
+        lastResponseAssessment.depth === "thin")
+    ) {
+      return {
+        mode: "interview",
+        primary: lastSpecialist,
+        coordinated: [],
+        reason: `same-speaker-follow-up:${lastResponseAssessment.reason}`
       };
     }
 
@@ -792,10 +991,16 @@ export class Chat extends AIChatAgent<JarvisEnv> {
     bindingKey: string;
     simpleMessages: SimpleTurnMessage[];
     candidateContext?: string;
+    interviewId?: string;
   }): Promise<string> {
-    const { speakerId, bindingKey, simpleMessages, candidateContext } = options;
+    const {
+      speakerId,
+      bindingKey,
+      simpleMessages,
+      candidateContext,
+      interviewId
+    } = options;
 
-    // biome-ignore lint/suspicious/noExplicitAny: dynamic DO binding access
     const ns = (this.env as unknown as Record<string, unknown>)[bindingKey] as
       | DurableObjectNamespace
       | undefined;
@@ -825,7 +1030,8 @@ export class Chat extends AIChatAgent<JarvisEnv> {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           messages: simpleMessages,
-          candidateContext: delegatedContext || undefined
+          candidateContext: delegatedContext || undefined,
+          interviewId
         })
       });
 
@@ -842,33 +1048,6 @@ export class Chat extends AIChatAgent<JarvisEnv> {
       console.error("Specialist DO call failed:", error);
       return specialistText;
     }
-  }
-
-  private async callBehavioralTurn(options: {
-    simpleMessages: SimpleTurnMessage[];
-    candidateContext?: string;
-  }): Promise<string> {
-    const result = await generateText({
-      model: this.resolveModel(),
-      system: `You are Lisa Torres, the Behavioral Analyst at PanelAI.
-
-## Persona
-- Speak as Lisa Torres, but do not re-introduce yourself after the first turn in this interview
-- Calm, clear, and focused on concrete examples
-- Use STAR follow-ups when needed
-
-## Rules
-- Ask exactly ONE behavioral question
-- Keep it concise and specific
-- Never close or conclude the interview; Alex Monroe handles wrap-up prompts
-- Never ask "Do you have any questions for the panel?"
-- Do not reveal you are an AI unless directly asked
-
-${options.candidateContext ?? ""}`,
-      messages: options.simpleMessages
-    });
-
-    return result.text;
   }
 
   async getMemories(): Promise<Memory[]> {
@@ -1012,7 +1191,7 @@ ${options.candidateContext ?? ""}`,
           await this.setQueuedPanelFollowUp(null);
         }
 
-        const route = this.choosePanelRoute(cleanedMessages);
+        const route = await this.choosePanelRoute(cleanedMessages);
 
         // No tool patterns for the interview agent — keep it focused
         const toolPatterns: RegExp[] = [];
@@ -1042,7 +1221,7 @@ ${options.candidateContext ?? ""}`,
         // candidate response; optionally run a coordinated dual specialist turn.
         const primaryBindingKey = SPEAKER_BINDING[route.primary];
 
-        if (primaryBindingKey || route.primary === "behavioral") {
+        if (primaryBindingKey) {
           const simpleMessages = this.toSimpleMessages(processedMessages);
           const latestUserText = this.getLatestUserText(processedMessages);
           const specialistTurnsSoFar =
@@ -1051,18 +1230,12 @@ ${options.candidateContext ?? ""}`,
             route.primary !== "orchestrator" &&
             !this.hasSpeakerSpoken(processedMessages, route.primary);
 
-          const primaryText =
-            route.primary === "behavioral"
-              ? await this.callBehavioralTurn({
-                  simpleMessages,
-                  candidateContext: memoryContext || undefined
-                })
-              : await this.callSpecialistTurn({
-                  speakerId: route.primary,
-                  bindingKey: primaryBindingKey!,
-                  simpleMessages,
-                  candidateContext: memoryContext || undefined
-                });
+          const primaryText = await this.callSpecialistTurn({
+            speakerId: route.primary,
+            bindingKey: primaryBindingKey,
+            simpleMessages,
+            candidateContext: memoryContext || undefined
+          });
 
           const immediateTurnText = this.normalizeSpecialistTurnText(
             route.primary,
@@ -1076,6 +1249,7 @@ ${options.candidateContext ?? ""}`,
                   immediateTurnText
                 )
               : immediateTurnText;
+          let forcedModeratorClose = false;
 
           if (
             route.primary !== "orchestrator" &&
@@ -1083,10 +1257,11 @@ ${options.candidateContext ?? ""}`,
           ) {
             specialistText = this.getModeratorClosingPrompt();
             await this.setQueuedPanelFollowUp(null);
+            forcedModeratorClose = true;
           }
 
           const nextCoordinatedSpeaker = route.coordinated[0];
-          if (nextCoordinatedSpeaker) {
+          if (nextCoordinatedSpeaker && !forcedModeratorClose) {
             const bindingKey = SPEAKER_BINDING[nextCoordinatedSpeaker];
             const primarySpeakerName = PANEL_SPEAKERS[route.primary].name;
             const shouldBridgeFollowUp = this.shouldBridgeFollowUp({
@@ -1102,32 +1277,20 @@ ${options.candidateContext ?? ""}`,
 
             const coordinatedContext = `${memoryContext}\n\nPanel coordination note: ${primarySpeakerName} asked the previous question. The candidate has not answered that question yet in this turn. Do not invent or narrate a candidate response.\n\nThe following panel turns already happened in this turn:\n${immediateTurnText}\n\nRules for this coordinated follow-up:\n- Ask one concise, non-redundant follow-up question\n- If there is a clear overlap with ${primarySpeakerName}'s question, you may briefly reference it\n- If overlap is weak, ask an independent question from your own lane\n- Do not include placeholder lines like "(The candidate responds...)"\n- Do not re-introduce yourself; continue naturally as an ongoing panel discussion.`;
 
-            const rawQueuedFollowUpText =
-              nextCoordinatedSpeaker === "behavioral"
-                ? await this.callBehavioralTurn({
-                    simpleMessages: [
-                      ...simpleMessages,
-                      {
-                        role: "assistant",
-                        content: immediateTurnText
-                      }
-                    ],
-                    candidateContext: coordinatedContext
-                  })
-                : bindingKey
-                  ? await this.callSpecialistTurn({
-                      speakerId: nextCoordinatedSpeaker,
-                      bindingKey,
-                      simpleMessages: [
-                        ...simpleMessages,
-                        {
-                          role: "assistant",
-                          content: immediateTurnText
-                        }
-                      ],
-                      candidateContext: coordinatedContext
-                    })
-                  : `${PANEL_SPEAKERS[nextCoordinatedSpeaker].name}: I have a brief follow-up from my perspective.`;
+            const rawQueuedFollowUpText = bindingKey
+              ? await this.callSpecialistTurn({
+                  speakerId: nextCoordinatedSpeaker,
+                  bindingKey,
+                  simpleMessages: [
+                    ...simpleMessages,
+                    {
+                      role: "assistant",
+                      content: immediateTurnText
+                    }
+                  ],
+                  candidateContext: coordinatedContext
+                })
+              : `${PANEL_SPEAKERS[nextCoordinatedSpeaker].name}: I have a brief follow-up from my perspective.`;
 
             const normalizedQueuedFollowUpText =
               this.normalizeSpecialistTurnText(
@@ -1197,7 +1360,7 @@ ${options.candidateContext ?? ""}`,
           return; // done for this specialist turn
         }
 
-        // ── Orchestrator / Behavioral — handled directly ─────────────────
+        // ── Orchestrator — handled directly ───────────────────────────────
         const orchestratorSystem =
           route.mode === "closing"
             ? `You are Alex Monroe, the moderator of a live panel interview at PanelAI.

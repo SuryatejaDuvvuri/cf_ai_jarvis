@@ -1,5 +1,12 @@
 /** biome-ignore-all lint/correctness/useUniqueElementIds: it's alright */
-import { useEffect, useState, useRef, useCallback } from "react";
+import {
+  useEffect,
+  useState,
+  useRef,
+  useCallback,
+  Suspense,
+  useMemo
+} from "react";
 import { useAgent } from "agents/react";
 import { isStaticToolUIPart } from "ai";
 import { useAgentChat } from "@cloudflare/ai-chat/react";
@@ -14,6 +21,8 @@ import {
   TrashIcon
 } from "@phosphor-icons/react";
 
+import { CouncilScene } from "./views/council-scene";
+
 // ─── Agent definitions ────────────────────────────────────────────────────────
 
 type Agent = {
@@ -22,7 +31,6 @@ type Agent = {
   role: string;
   color: string;
   voice: string;
-  avatar: string; // Avatar URL
 };
 
 type InterviewSessionContext = {
@@ -31,54 +39,54 @@ type InterviewSessionContext = {
   interviewId: string;
 };
 
+type PanelTranscriptTurn = {
+  role: "candidate" | "panel";
+  speaker?: string;
+  text: string;
+};
+
 const AGENTS: Agent[] = [
   {
     id: "orchestrator",
     name: "Alex Monroe",
     role: "Interview Moderator",
     color: "#8B5CF6",
-    voice: "athena",
-    avatar: "https://randomuser.me/api/portraits/men/75.jpg"
+    voice: "athena"
   },
   {
     id: "hr",
     name: "Sarah Park",
     role: "HR & Recruiter",
     color: "#3B82F6",
-    voice: "asteria",
-    avatar: "https://randomuser.me/api/portraits/women/68.jpg"
+    voice: "asteria"
   },
   {
     id: "technical",
     name: "Dr. Raj Patel",
     role: "Technical Lead",
     color: "#06B6D4",
-    voice: "orion",
-    avatar: "https://randomuser.me/api/portraits/men/11.jpg"
+    voice: "orion"
   },
   {
     id: "culture",
     name: "Maya Chen",
     role: "Culture & Values",
     color: "#10B981",
-    voice: "luna",
-    avatar: "https://randomuser.me/api/portraits/women/44.jpg"
+    voice: "luna"
   },
   {
     id: "domain",
     name: "James Liu",
     role: "Domain Expert",
     color: "#F59E0B",
-    voice: "orpheus",
-    avatar: "https://randomuser.me/api/portraits/men/81.jpg"
+    voice: "orpheus"
   },
   {
     id: "behavioral",
     name: "Lisa Torres",
     role: "Behavioral Analyst",
     color: "#EC4899",
-    voice: "stella",
-    avatar: "https://randomuser.me/api/portraits/women/53.jpg"
+    voice: "stella"
   }
 ];
 
@@ -110,6 +118,8 @@ function sanitizeAssistantTextForDisplay(text: string): string {
     /alex monroe|sarah park|dr\.?\s*raj patel|maya chen|james liu|lisa torres/gi;
   const speakerTagPattern =
     /^\s*\(?\s*(?:alex monroe|sarah park|dr\.?\s*raj patel|maya chen|james liu|lisa torres)\s*\)?\s*[:-]\s*/i;
+  const stageDirectionPattern =
+    /^\s*[[(].*(?:each\s+panel\s+member|panel\s+members|candidate\s+response|candidate\s+answers?|panel\s+response).*[\])]\s*$/i;
 
   const cleanedLines = text
     .replace(/\[MEMORY:[^\]]+\]/gi, "")
@@ -121,10 +131,17 @@ function sanitizeAssistantTextForDisplay(text: string): string {
     .map((line) => line.trim())
     .filter((line) => line.length > 0)
     .filter((line) => !/^\s*memory\s*:/i.test(line))
+    .filter((line) => !stageDirectionPattern.test(line))
     .map((line) => line.replace(speakerTagPattern, ""))
     .filter((line) => line.length > 0);
 
   return cleanedLines.join("\n").trim();
+}
+
+function isModeratorClosingPrompt(text: string): boolean {
+  return /\b(do you have any questions for the panel|any questions for the panel|that(?:'| i)?s all the questions we have for now)\b/i.test(
+    text
+  );
 }
 
 // ─── Speaker detection ────────────────────────────────────────────────────────
@@ -145,15 +162,26 @@ const SPEAKER_PATTERNS: Array<{ id: string; pattern: RegExp }> = [
 ];
 
 function detectAgentId(text: string): string | null {
+  if (isModeratorClosingPrompt(text)) {
+    return "orchestrator";
+  }
+
   const lines = text
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter((line) => line.length > 0);
 
+  let lastDetected: string | null = null;
   for (const line of lines) {
     for (const { id, pattern } of SPEAKER_PATTERNS) {
-      if (pattern.test(line)) return id;
+      if (pattern.test(line)) {
+        lastDetected = id;
+        break;
+      }
     }
+  }
+  if (lastDetected) {
+    return lastDetected;
   }
 
   const opener = (lines[0] ?? text).toLowerCase();
@@ -166,6 +194,40 @@ function detectAgentId(text: string): string | null {
   if (/\b(?:i[' ]?m|i am|this is)\s+lisa\b/.test(opener)) return "behavioral";
 
   return null;
+}
+
+function buildInterviewTranscript(
+  messages: UIMessage[]
+): PanelTranscriptTurn[] {
+  const turns: PanelTranscriptTurn[] = [];
+
+  for (const message of messages) {
+    const rawText = getMessageText(message);
+    if (!rawText) {
+      continue;
+    }
+
+    if (message.role === "user") {
+      turns.push({
+        role: "candidate",
+        text: rawText
+      });
+      continue;
+    }
+
+    if (message.role === "assistant") {
+      const speakerId = detectAgentId(rawText);
+      const speaker = speakerId ? agentById(speakerId).name : undefined;
+      const cleanedText = sanitizeAssistantTextForDisplay(rawText) || rawText;
+      turns.push({
+        role: "panel",
+        speaker,
+        text: cleanedText
+      });
+    }
+  }
+
+  return turns.slice(-80);
 }
 
 // ─── Agent avatar component ───────────────────────────────────────────────────
@@ -181,6 +243,13 @@ function AgentAvatar({
   glow?: boolean;
   pulse?: boolean;
 }) {
+  const initials = agent.name
+    .split(" ")
+    .map((w) => w[0])
+    .join("")
+    .slice(0, 2)
+    .toUpperCase();
+
   return (
     <div style={{ position: "relative", flexShrink: 0 }}>
       <div
@@ -191,41 +260,19 @@ function AgentAvatar({
           overflow: "hidden",
           border: `2px solid ${glow ? agent.color : "rgba(148,163,184,0.15)"}`,
           boxShadow: glow ? `0 0 20px ${agent.color}55` : "none",
-          background: `${agent.color}22`,
+          background: `linear-gradient(135deg, ${agent.color}55, ${agent.color}22)`,
           transition: "all 0.3s ease",
-          flexShrink: 0
+          flexShrink: 0,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          fontSize: `${size * 0.3}px`,
+          fontWeight: 700,
+          color: "#e2e8f0",
+          letterSpacing: 0.3
         }}
       >
-        <img
-          src={agent.avatar}
-          alt={agent.name}
-          width={size}
-          height={size}
-          style={{
-            display: "block",
-            width: "100%",
-            height: "100%",
-            objectFit: "cover"
-          }}
-          onError={(e) => {
-            // Fallback to initials if avatar fails to load
-            const el = e.currentTarget;
-            el.style.display = "none";
-            const parent = el.parentElement;
-            if (parent) {
-              parent.style.display = "flex";
-              parent.style.alignItems = "center";
-              parent.style.justifyContent = "center";
-              parent.style.fontSize = `${size * 0.3}px`;
-              parent.style.fontWeight = "700";
-              parent.style.color = agent.color;
-              parent.textContent = agent.name
-                .split(" ")
-                .map((w) => w[0])
-                .join("");
-            }
-          }}
-        />
+        {initials}
       </div>
       {pulse && (
         <div
@@ -314,6 +361,7 @@ export default function PanelInterview() {
   const [input, setInput] = useState("");
   const lastProcessedId = useRef<string | null>(null);
   const lastSpoken = useRef<string | null>(null);
+  const activeSpeechAudio = useRef<HTMLAudioElement | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const mediaRecorder = useRef<MediaRecorder | null>(null);
   const audioChunks = useRef<Blob[]>([]);
@@ -495,12 +543,14 @@ export default function PanelInterview() {
 
     void (async () => {
       try {
+        const transcript = buildInterviewTranscript(messages);
         const response = await fetch("/api/interview/run-panel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             interviewId: sessionContext.interviewId,
-            candidateId: sessionContext.candidateId
+            candidateId: sessionContext.candidateId,
+            transcript
           })
         });
 
@@ -518,9 +568,15 @@ export default function PanelInterview() {
     })();
   }, [messages, sessionContext, status]);
 
-  // TTS is disabled per user request - keeping hook structure in place
-  const speakResponse = useCallback(async (_text: string, _voice: string) => {
-    // TTS disabled
+  const speakResponse = useCallback(async (_text: string, _agentId: string) => {
+    // TTS disabled.
+    if (activeSpeechAudio.current) {
+      activeSpeechAudio.current.pause();
+      activeSpeechAudio.current = null;
+    }
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      window.speechSynthesis.cancel();
+    }
   }, []);
 
   // Detect active speaker from new assistant messages
@@ -538,7 +594,7 @@ export default function PanelInterview() {
     setActiveSpeakerId(detected);
     setSeenAgents((prev) => new Set([...prev, detected]));
     setMessageAgentMap((prev) => ({ ...prev, [last.id]: detected }));
-    speakResponse(text, agentById(detected).voice);
+    speakResponse(text, detected);
   }, [messages, status, activeSpeakerId, speakResponse]);
 
   function getMsgAgent(msg: UIMessage): Agent {
@@ -619,6 +675,42 @@ export default function PanelInterview() {
         TOOLS_REQUIRING_CONFIRMATION.includes(p.type.replace("tool-", ""))
     )
   );
+
+  const visibleMessages = useMemo(() => {
+    const onlyTextParts = (message: UIMessage): boolean =>
+      (message.parts ?? []).every((part) => part.type === "text");
+
+    const deduped: UIMessage[] = [];
+    for (const message of messages) {
+      const prev = deduped[deduped.length - 1];
+      if (
+        prev &&
+        prev.role === "assistant" &&
+        message.role === "assistant" &&
+        onlyTextParts(prev) &&
+        onlyTextParts(message)
+      ) {
+        const prevText = sanitizeAssistantTextForDisplay(getMessageText(prev));
+        const nextText = sanitizeAssistantTextForDisplay(
+          getMessageText(message)
+        );
+        const prevSpeaker =
+          messageAgentMap[prev.id] ?? detectAgentId(getMessageText(prev));
+        const nextSpeaker =
+          messageAgentMap[message.id] ?? detectAgentId(getMessageText(message));
+
+        if (
+          prevText.length > 0 &&
+          prevText === nextText &&
+          (prevSpeaker ?? "orchestrator") === (nextSpeaker ?? "orchestrator")
+        ) {
+          continue;
+        }
+      }
+      deduped.push(message);
+    }
+    return deduped;
+  }, [messages, messageAgentMap]);
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
@@ -709,20 +801,24 @@ export default function PanelInterview() {
                       width: 28,
                       height: 28,
                       borderRadius: "50%",
-                      overflow: "hidden",
                       border: `2px solid ${isActive ? a.color : seen ? `${a.color}55` : "rgba(148,163,184,0.15)"}`,
                       opacity: isActive ? 1 : seen ? 0.7 : 0.35,
                       transition: "all 0.25s ease",
-                      background: `${a.color}18`
+                      background: `${a.color}18`,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 10,
+                      fontWeight: 700,
+                      color: "#cbd5e1"
                     }}
                   >
-                    <img
-                      src={a.avatar}
-                      alt={a.name}
-                      width={28}
-                      height={28}
-                      style={{ display: "block" }}
-                    />
+                    {a.name
+                      .split(" ")
+                      .map((w) => w[0])
+                      .join("")
+                      .slice(0, 2)
+                      .toUpperCase()}
                   </div>
                   {isActive && isStreaming && (
                     <div
@@ -802,146 +898,125 @@ export default function PanelInterview() {
               background: `radial-gradient(ellipse at 30% 26%, ${currentAgent.color}14 0%, transparent 62%), #070d19`
             }}
           >
+            {/* ── 3D Jedi-Council Scene ─────────────────────────────── */}
             <div
               style={{
                 display: "flex",
                 flexDirection: "column",
                 alignItems: "center",
-                gap: 18
+                gap: 12,
+                width: "100%"
               }}
             >
-              {/* Large avatar */}
-              <AgentAvatar
-                agent={currentAgent}
-                size={166}
-                glow
-                pulse={isStreaming}
-              />
+              <div
+                style={{
+                  width: "100%",
+                  height: 420,
+                  borderRadius: 16,
+                  overflow: "hidden",
+                  border: "1px solid rgba(148,163,184,0.12)",
+                  background: "#020b18",
+                  boxShadow: `0 0 30px ${currentAgent.color}22`
+                }}
+              >
+                <Suspense
+                  fallback={
+                    <div
+                      style={{
+                        width: "100%",
+                        height: "100%",
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: "#64748b",
+                        fontSize: 12
+                      }}
+                    >
+                      Loading council…
+                    </div>
+                  }
+                >
+                  <CouncilScene
+                    activeSpeakerId={
+                      activeSpeakerId === "hr"
+                        ? "recruiter"
+                        : activeSpeakerId === "behavioral"
+                          ? "orchestrator"
+                          : activeSpeakerId
+                    }
+                    isStreaming={isStreaming}
+                  />
+                </Suspense>
+              </div>
 
-              {/* Name + role */}
+              {/* Name + role + status */}
               <div style={{ textAlign: "center" as const }}>
                 <div
                   style={{
                     fontWeight: 700,
-                    fontSize: 22,
+                    fontSize: 18,
                     color: "#e2e8f0",
-                    marginBottom: 6
+                    marginBottom: 4
                   }}
                 >
                   {currentAgent.name}
                 </div>
                 <div
                   style={{
-                    fontSize: 12,
+                    fontSize: 11,
                     color: "#64748b",
-                    letterSpacing: "0.08em"
+                    letterSpacing: "0.08em",
+                    marginBottom: 6
                   }}
                 >
                   {currentAgent.role.toUpperCase()}
                 </div>
-              </div>
-
-              {/* Speaking status */}
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                {isStreaming ? (
-                  <>
-                    <div
-                      style={{ display: "flex", gap: 4, alignItems: "center" }}
-                    >
-                      {[0, 1, 2].map((i) => (
-                        <div
-                          key={i}
-                          style={{
-                            width: 6,
-                            height: 6,
-                            borderRadius: "50%",
-                            background: currentAgent.color,
-                            animation: `speaking-dots 1.4s ease-in-out ${i * 0.16}s infinite`
-                          }}
-                        />
-                      ))}
-                    </div>
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: currentAgent.color,
-                        fontWeight: 700
-                      }}
-                    >
-                      Speaking
+                <div
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    justifyContent: "center"
+                  }}
+                >
+                  {isStreaming ? (
+                    <>
+                      <div
+                        style={{
+                          display: "flex",
+                          gap: 4,
+                          alignItems: "center"
+                        }}
+                      >
+                        {[0, 1, 2].map((i) => (
+                          <div
+                            key={i}
+                            style={{
+                              width: 6,
+                              height: 6,
+                              borderRadius: "50%",
+                              background: currentAgent.color,
+                              animation: `speaking-dots 1.4s ease-in-out ${i * 0.16}s infinite`
+                            }}
+                          />
+                        ))}
+                      </div>
+                      <span
+                        style={{
+                          fontSize: 12,
+                          color: currentAgent.color,
+                          fontWeight: 700
+                        }}
+                      >
+                        Speaking
+                      </span>
+                    </>
+                  ) : (
+                    <span style={{ fontSize: 12, color: "#334155" }}>
+                      Listening
                     </span>
-                  </>
-                ) : (
-                  <span style={{ fontSize: 12, color: "#334155" }}>
-                    Listening
-                  </span>
-                )}
-              </div>
-
-              {/* Full panel lineup */}
-              <div
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "repeat(3, minmax(0, 1fr))",
-                  gap: 10,
-                  width: "100%",
-                  maxWidth: 360,
-                  paddingTop: 16,
-                  borderTop: "1px solid rgba(148,163,184,0.08)"
-                }}
-              >
-                {AGENTS.map((a) => {
-                  const isCurrent = a.id === activeSpeakerId;
-                  const seen = seenAgents.has(a.id);
-
-                  return (
-                    <div
-                      key={a.id}
-                      title={a.name}
-                      style={{ textAlign: "center" as const }}
-                    >
-                      <div
-                        style={{
-                          margin: "0 auto",
-                          width: 46,
-                          height: 46,
-                          borderRadius: "50%",
-                          overflow: "hidden",
-                          border: `2px solid ${isCurrent ? a.color : seen ? `${a.color}55` : "rgba(148,163,184,0.15)"}`,
-                          opacity: isCurrent ? 1 : seen ? 0.78 : 0.36,
-                          boxShadow: isCurrent
-                            ? `0 0 0 3px ${a.color}22`
-                            : "none"
-                        }}
-                      >
-                        <img
-                          src={a.avatar}
-                          alt={a.name}
-                          width={46}
-                          height={46}
-                          style={{
-                            display: "block",
-                            width: "100%",
-                            height: "100%",
-                            objectFit: "cover"
-                          }}
-                        />
-                      </div>
-                      <div
-                        style={{
-                          marginTop: 4,
-                          fontSize: 10,
-                          color: isCurrent ? "#cbd5e1" : "#64748b",
-                          whiteSpace: "nowrap",
-                          overflow: "hidden",
-                          textOverflow: "ellipsis"
-                        }}
-                      >
-                        {a.name.split(" ")[0]}
-                      </div>
-                    </div>
-                  );
-                })}
+                  )}
+                </div>
               </div>
             </div>
 
@@ -961,7 +1036,18 @@ export default function PanelInterview() {
                   letterSpacing: "0.04em"
                 }}
               >
-                RESPOND WITH TEXT OR VOICE
+                YOUR RESPONSE
+                <span
+                  style={{
+                    display: "block",
+                    marginTop: 4,
+                    fontSize: 10,
+                    opacity: 0.9
+                  }}
+                >
+                  Type below or use the Voice button to speak — your words
+                  appear in the box, then send.
+                </span>
               </div>
 
               <form
@@ -977,7 +1063,7 @@ export default function PanelInterview() {
                       handleSubmit(e as unknown as React.FormEvent);
                     }
                   }}
-                  placeholder="Type your response... (Enter to send)"
+                  placeholder="Type your answer, or click Voice to dictate…"
                   rows={3}
                   disabled={isStreaming || pendingConfirmation}
                   style={{
@@ -995,74 +1081,132 @@ export default function PanelInterview() {
                   }}
                 />
 
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button
-                    type="button"
-                    onClick={handleVoiceInput}
-                    disabled={
-                      isStreaming || isTranscribing || pendingConfirmation
-                    }
-                    title={isRecording ? "Stop recording" : "Voice input"}
-                    style={{
-                      width: 42,
-                      height: 42,
-                      borderRadius: 10,
-                      border: "none",
-                      cursor: "pointer",
-                      background: isRecording
-                        ? "rgba(239,68,68,0.2)"
-                        : "rgba(148,163,184,0.08)",
-                      color: isRecording ? "#f87171" : "#64748b",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      transition: "all 0.15s"
-                    }}
-                  >
-                    {isTranscribing ? (
-                      <div
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: 6,
+                    flexShrink: 0
+                  }}
+                >
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <button
+                      type="button"
+                      onClick={handleVoiceInput}
+                      disabled={
+                        isStreaming || isTranscribing || pendingConfirmation
+                      }
+                      aria-label={
+                        isRecording
+                          ? "Stop voice recording"
+                          : isTranscribing
+                            ? "Transcribing voice"
+                            : "Record voice — speak your response"
+                      }
+                      title={
+                        isRecording
+                          ? "Stop recording"
+                          : isTranscribing
+                            ? "Transcribing…"
+                            : "Voice — click to speak; click again to stop"
+                      }
+                      style={{
+                        minWidth: 72,
+                        height: 48,
+                        borderRadius: 10,
+                        border: "none",
+                        cursor: "pointer",
+                        background: isRecording
+                          ? "rgba(239,68,68,0.2)"
+                          : "rgba(148,163,184,0.1)",
+                        color: isRecording ? "#f87171" : "#94a3b8",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 2,
+                        padding: "6px 8px",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      {isTranscribing ? (
+                        <div
+                          style={{
+                            width: 14,
+                            height: 14,
+                            borderRadius: "50%",
+                            border: "2px solid #64748b",
+                            borderTopColor: "transparent",
+                            animation: "spin 0.8s linear infinite"
+                          }}
+                        />
+                      ) : isRecording ? (
+                        <StopIcon size={16} weight="bold" />
+                      ) : (
+                        <MicrophoneIcon size={16} weight="bold" />
+                      )}
+                      <span
                         style={{
-                          width: 14,
-                          height: 14,
-                          borderRadius: "50%",
-                          border: "2px solid #64748b",
-                          borderTopColor: "transparent",
-                          animation: "spin 0.8s linear infinite"
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase" as const,
+                          lineHeight: 1
                         }}
-                      />
-                    ) : isRecording ? (
-                      <StopIcon size={16} />
-                    ) : (
-                      <MicrophoneIcon size={16} />
-                    )}
-                  </button>
+                      >
+                        {isTranscribing
+                          ? "Wait"
+                          : isRecording
+                            ? "Stop"
+                            : "Voice"}
+                      </span>
+                    </button>
 
-                  <button
-                    type={isStreaming ? "button" : "submit"}
-                    onClick={isStreaming ? stop : undefined}
-                    disabled={!isStreaming && !input.trim()}
-                    style={{
-                      width: 42,
-                      height: 42,
-                      borderRadius: 10,
-                      border: "none",
-                      cursor: "pointer",
-                      background: isStreaming
-                        ? "rgba(239,68,68,0.15)"
-                        : `${currentAgent.color}33`,
-                      color: isStreaming ? "#f87171" : "#dbeafe",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      transition: "all 0.15s"
-                    }}
-                  >
-                    {isStreaming ? (
-                      <StopIcon size={16} />
-                    ) : (
-                      <PaperPlaneTiltIcon size={16} />
-                    )}
-                  </button>
+                    <button
+                      type={isStreaming ? "button" : "submit"}
+                      onClick={isStreaming ? stop : undefined}
+                      disabled={!isStreaming && !input.trim()}
+                      aria-label={
+                        isStreaming ? "Stop generating" : "Send message"
+                      }
+                      title={isStreaming ? "Stop" : "Send"}
+                      style={{
+                        minWidth: 72,
+                        height: 48,
+                        borderRadius: 10,
+                        border: "none",
+                        cursor: "pointer",
+                        background: isStreaming
+                          ? "rgba(239,68,68,0.15)"
+                          : `${currentAgent.color}33`,
+                        color: isStreaming ? "#f87171" : "#dbeafe",
+                        display: "flex",
+                        flexDirection: "column",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        gap: 2,
+                        padding: "6px 8px",
+                        transition: "all 0.15s"
+                      }}
+                    >
+                      {isStreaming ? (
+                        <StopIcon size={16} weight="bold" />
+                      ) : (
+                        <PaperPlaneTiltIcon size={16} weight="bold" />
+                      )}
+                      <span
+                        style={{
+                          fontSize: 9,
+                          fontWeight: 700,
+                          letterSpacing: "0.06em",
+                          textTransform: "uppercase" as const,
+                          lineHeight: 1
+                        }}
+                      >
+                        {isStreaming ? "Stop" : "Send"}
+                      </span>
+                    </button>
+                  </div>
                 </div>
               </form>
             </div>
@@ -1101,7 +1245,7 @@ export default function PanelInterview() {
                 gap: 10
               }}
             >
-              {messages.length === 0 && (
+              {visibleMessages.length === 0 && (
                 <div
                   style={{
                     margin: "auto",
@@ -1121,8 +1265,20 @@ export default function PanelInterview() {
                 </div>
               )}
 
-              {messages.map((msg) => {
+              {visibleMessages.map((msg) => {
                 const isUser = msg.role === "user";
+                const hasRenderableContent = (msg.parts ?? []).some((part) => {
+                  if (part.type === "text") {
+                    const content = isUser
+                      ? part.text.trim()
+                      : sanitizeAssistantTextForDisplay(part.text);
+                    return content.length > 0;
+                  }
+                  return isStaticToolUIPart(part);
+                });
+                if (!hasRenderableContent) {
+                  return null;
+                }
                 const msgAgent = isUser ? null : getMsgAgent(msg);
 
                 return (
