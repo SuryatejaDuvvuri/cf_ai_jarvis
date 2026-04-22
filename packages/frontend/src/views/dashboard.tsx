@@ -25,8 +25,115 @@ function prettyKeyEarly(value: string): string {
 }
 
 async function readTextFromUpload(file: File): Promise<string> {
+  const normalize = (raw: string): string =>
+    raw
+      .replaceAll("\0", "")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+
+  const name = file.name.toLowerCase();
+
+  if (name.endsWith(".pdf")) {
+    // pdfjs 5 relies on Promise.withResolvers in some runtimes; polyfill if missing.
+    if (!("withResolvers" in Promise)) {
+      (
+        Promise as PromiseConstructor & {
+          withResolvers: <T>() => {
+            promise: Promise<T>;
+            resolve: (value: T | PromiseLike<T>) => void;
+            reject: (reason?: unknown) => void;
+          };
+        }
+      ).withResolvers = function withResolvers<T>() {
+        let resolve!: (value: T | PromiseLike<T>) => void;
+        let reject!: (reason?: unknown) => void;
+        const promise = new Promise<T>((res, rej) => {
+          resolve = res;
+          reject = rej;
+        });
+        return { promise, resolve, reject };
+      };
+    }
+
+    const data = new Uint8Array(await file.arrayBuffer());
+    const loadPdfJs = async () => {
+      try {
+        return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as {
+          getDocument: (input: {
+            data: Uint8Array;
+            disableWorker?: boolean;
+          }) => { promise: Promise<unknown> };
+        };
+      } catch {
+        try {
+          const minifiedPath = "pdfjs-dist/legacy/build/pdf.min.mjs";
+          return (await import(/* @vite-ignore */ minifiedPath)) as {
+            getDocument: (input: {
+              data: Uint8Array;
+              disableWorker?: boolean;
+            }) => { promise: Promise<unknown> };
+          };
+        } catch {
+          const fallbackPath = "pdfjs-dist/build/pdf.mjs";
+          return (await import(/* @vite-ignore */ fallbackPath)) as {
+            getDocument: (input: {
+              data: Uint8Array;
+              disableWorker?: boolean;
+            }) => { promise: Promise<unknown> };
+          };
+        }
+      }
+    };
+
+    const pdfjs = await loadPdfJs();
+    const loadingTask = pdfjs.getDocument({
+      data,
+      disableWorker: true
+    });
+    const pdf = (await loadingTask.promise) as {
+      numPages: number;
+      getPage: (pageNumber: number) => Promise<{
+        getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
+      }>;
+    };
+
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const pageText = textContent.items
+        .map((item) => item.str ?? "")
+        .join(" ")
+        .trim();
+      if (pageText.length > 0) {
+        pages.push(pageText);
+      }
+    }
+
+    const extracted = normalize(pages.join("\n"));
+    if (!extracted) {
+      throw new Error("empty-pdf-text");
+    }
+    return extracted;
+  }
+
+  if (name.endsWith(".docx")) {
+    const mammoth = await import("mammoth");
+    const result = await mammoth.extractRawText({
+      arrayBuffer: await file.arrayBuffer()
+    });
+    return normalize(result.value);
+  }
+
+  // Legacy .doc files are not reliably parseable in-browser. Best-effort fallback.
+  if (name.endsWith(".doc")) {
+    const raw = await file.text();
+    return normalize(raw);
+  }
+
   const raw = await file.text();
-  return raw.replaceAll("\0", "").trim();
+  return normalize(raw);
 }
 
 // ─── Agent Meta ──────────────────────────────────────────────────────────────────
@@ -250,6 +357,36 @@ function recommendationStyle(value: string): React.CSSProperties {
     border: "1px solid rgba(248,113,113,0.32)",
     color: "#f87171"
   };
+}
+
+function artifactEvidenceLines(artifact: InterviewerArtifact): string[] {
+  const scoreEvidence = Object.entries(artifact.scores ?? {})
+    .map(([criterion, detail]) => {
+      const evidence = detail?.evidence?.trim();
+      if (!evidence) return null;
+      return `${prettyKey(criterion)}: ${evidence}`;
+    })
+    .filter((value): value is string => Boolean(value));
+
+  const strengths = (artifact.strengths ?? [])
+    .map((item) => item.evidence?.trim())
+    .filter((value): value is string => Boolean(value))
+    .map((value) => `Strength signal: ${value}`);
+
+  const concerns = (artifact.concerns ?? [])
+    .map((item) => item.evidence?.trim())
+    .filter((value): value is string => Boolean(value))
+    .map((value) => `Concern signal: ${value}`);
+
+  return [...scoreEvidence, ...strengths, ...concerns].slice(0, 4);
+}
+
+function safeFileSegment(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 40);
 }
 
 function overallAgentScore(artifact: InterviewerArtifact): number | null {
@@ -729,7 +866,9 @@ function JobsTab({
         setDescription(text);
       }
     } catch {
-      setSyncMessage("Unable to read JD file. Try .txt/.md or paste manually.");
+      setSyncMessage(
+        "Unable to read JD file. Try .txt/.md/.pdf/.docx or paste manually."
+      );
     } finally {
       setIngestingJD(false);
     }
@@ -947,11 +1086,11 @@ function JobsTab({
               <span>
                 {ingestingJD
                   ? "Reading JD..."
-                  : "Upload JD (.txt/.md/.pdf/.docx)"}
+                  : "Upload JD (.txt/.md/.pdf/.docx/.doc)"}
               </span>
               <input
                 type="file"
-                accept=".txt,.md,.pdf,.docx"
+                accept=".txt,.md,.pdf,.docx,.doc"
                 onChange={(event) => {
                   void ingestJobDescription(
                     event.currentTarget.files?.[0] ?? null
@@ -1095,9 +1234,13 @@ function CandidatesTab({
         return;
       }
       setResumeTextInput(text);
-    } catch {
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message
+          ? ` (${error.message.slice(0, 140)})`
+          : "";
       setUploadError(
-        "Unable to read resume file. Try .txt/.md or paste text manually."
+        `Unable to read resume file. Try .txt/.md/.pdf/.docx or paste text manually (scanned PDFs may need OCR).${reason}`
       );
     } finally {
       setIngestingResume(false);
@@ -1298,10 +1441,10 @@ function CandidatesTab({
           >
             {ingestingResume
               ? "Reading resume..."
-              : "Upload Resume (.txt/.md/.pdf/.docx)"}
+              : "Upload Resume (.txt/.md/.pdf/.docx/.doc)"}
             <input
               type="file"
-              accept=".txt,.md,.pdf,.docx"
+              accept=".txt,.md,.pdf,.docx,.doc"
               onChange={(event) => {
                 void ingestResume(event.currentTarget.files?.[0] ?? null);
               }}
@@ -1603,6 +1746,244 @@ function CandidatesTab({
   );
 }
 
+// ─── Agent Office (live activity stream) ──────────────────────────────────────
+
+interface ActivityEvent {
+  id: string;
+  timestamp: string;
+  agentId: string;
+  agentRole?: string;
+  type: string;
+  summary: string;
+  metadata?: Record<string, unknown>;
+}
+
+interface PanelTranscriptTurn {
+  role: "candidate" | "panel";
+  speaker?: string;
+  text: string;
+}
+
+function AgentOfficePanel({ interviewId }: { interviewId: string }) {
+  const [events, setEvents] = useState<ActivityEvent[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let lastTimestamp = "";
+
+    const poll = async () => {
+      try {
+        const qs = lastTimestamp
+          ? `?since=${encodeURIComponent(lastTimestamp)}`
+          : "";
+        const response = await fetch(
+          `/api/interviews/${interviewId}/activity${qs}`
+        );
+        if (!response.ok) {
+          if (!cancelled) setError(`HTTP ${response.status}`);
+          return;
+        }
+        const next = (await response.json()) as ActivityEvent[];
+        if (cancelled) return;
+        if (next.length > 0) {
+          lastTimestamp = next[next.length - 1].timestamp;
+          setEvents((prev) => [...prev, ...next].slice(-200));
+        }
+        setError(null);
+      } catch (err) {
+        if (!cancelled) setError(String(err));
+      }
+    };
+
+    setEvents([]);
+    poll();
+    const interval = setInterval(poll, 1800);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [interviewId]);
+
+  const typeLabel: Record<string, string> = {
+    "turn-started": "thinking",
+    "turn-produced": "spoke",
+    "turn-failed": "turn failed",
+    "delegation-started": "delegated",
+    "delegation-completed": "delegation done",
+    "delegation-failed": "delegation failed",
+    "scoring-started": "scoring",
+    "score-produced": "scored",
+    "deliberation-started": "deliberating",
+    "deliberation-completed": "deliberation done",
+    "memory-write": "wrote memory",
+    "route-selected": "routed",
+    "bias-flag": "bias flag"
+  };
+
+  return (
+    <div
+      style={{
+        padding: "14px 16px",
+        borderRadius: 10,
+        background: "rgba(2,6,23,0.6)",
+        border: "1px solid rgba(148,163,184,0.12)",
+        marginTop: 16
+      }}
+    >
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: 10
+        }}
+      >
+        <div style={{ fontWeight: 700, fontSize: 14, color: "#e7edf8" }}>
+          Agent Office · Live
+        </div>
+        <div style={{ fontSize: 11, color: "#64748b" }}>
+          {events.length} event{events.length === 1 ? "" : "s"}
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ fontSize: 11, color: "#f87171", marginBottom: 8 }}>
+          {error}
+        </div>
+      )}
+
+      {events.length === 0 ? (
+        <div style={{ fontSize: 12, color: "#64748b", padding: "12px 0" }}>
+          Waiting for the panel to start working…
+        </div>
+      ) : (
+        <div
+          style={{
+            display: "flex",
+            flexDirection: "column",
+            gap: 8,
+            maxHeight: 520,
+            overflowY: "auto"
+          }}
+        >
+          {events
+            .slice()
+            .reverse()
+            .map((event) => {
+              const meta = getAgentMeta(event.agentRole ?? event.agentId);
+              return (
+                <div
+                  key={event.id}
+                  style={{
+                    display: "flex",
+                    gap: 10,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    background: "rgba(15,23,42,0.6)",
+                    border: `1px solid ${meta.color}22`
+                  }}
+                >
+                  <img
+                    src={meta.avatar}
+                    alt={meta.displayName}
+                    style={{
+                      width: 32,
+                      height: 32,
+                      borderRadius: "50%",
+                      border: `2px solid ${meta.color}`,
+                      flexShrink: 0
+                    }}
+                  />
+                  <div style={{ minWidth: 0, flex: 1 }}>
+                    <div
+                      style={{
+                        display: "flex",
+                        gap: 8,
+                        alignItems: "baseline",
+                        marginBottom: 2
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontWeight: 600,
+                          fontSize: 12,
+                          color: "#e7edf8"
+                        }}
+                      >
+                        {meta.displayName}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: meta.color,
+                          textTransform: "uppercase",
+                          letterSpacing: 0.4
+                        }}
+                      >
+                        {typeLabel[event.type] ?? event.type}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: 10,
+                          color: "#64748b",
+                          marginLeft: "auto"
+                        }}
+                      >
+                        {new Date(event.timestamp).toLocaleTimeString()}
+                      </span>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "#cbd5e1",
+                        lineHeight: 1.4
+                      }}
+                    >
+                      {event.summary}
+                    </div>
+                    {event.metadata &&
+                      Object.keys(event.metadata).length > 0 && (
+                        <div
+                          style={{
+                            marginTop: 6,
+                            display: "grid",
+                            gap: 4
+                          }}
+                        >
+                          {Object.entries(event.metadata)
+                            .slice(0, 4)
+                            .map(([key, value]) => (
+                              <div
+                                key={key}
+                                style={{
+                                  fontSize: 10.5,
+                                  color: "#94a3b8",
+                                  lineHeight: 1.35
+                                }}
+                              >
+                                <span
+                                  style={{ color: "#64748b", fontWeight: 600 }}
+                                >
+                                  {prettyKey(key)}:
+                                </span>{" "}
+                                {typeof value === "string"
+                                  ? value
+                                  : JSON.stringify(value)}
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                  </div>
+                </div>
+              );
+            })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Interviews Tab ────────────────────────────────────────────────────────────
 
 function InterviewsTab({
@@ -1621,6 +2002,9 @@ function InterviewsTab({
     "hire"
   );
   const [decisionNote, setDecisionNote] = useState("");
+  const [exportingPdf, setExportingPdf] = useState(false);
+  const [transcript, setTranscript] = useState<PanelTranscriptTurn[]>([]);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
 
   const candidateName = (id: string) =>
     candidates.find((c) => c.id === id)?.profile?.name ?? id;
@@ -1670,10 +2054,29 @@ function InterviewsTab({
     [interviews]
   );
 
+  const loadTranscript = useCallback(async (interviewId: string) => {
+    setTranscriptLoading(true);
+    try {
+      const response = await fetch(`/api/interviews/${interviewId}/transcript`);
+      if (!response.ok) {
+        setTranscript([]);
+        return;
+      }
+      const payload = (await response.json()) as PanelTranscriptTurn[];
+      setTranscript(Array.isArray(payload) ? payload : []);
+    } catch {
+      setTranscript([]);
+    } finally {
+      setTranscriptLoading(false);
+    }
+  }, []);
+
   const selectInterview = (id: string) => {
     setSelected(id);
     setScorecard(null);
+    setTranscript([]);
     loadScorecard(id);
+    void loadTranscript(id);
   };
 
   const submitDecision = async () => {
@@ -1708,11 +2111,164 @@ function InterviewsTab({
     (selectedInterview?.status === "deliberation" ||
       scorecard?.status === "ready-for-decision");
 
+  const buildReviewPacket = () => {
+    if (!selectedInterview || !scorecard) {
+      return null;
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      interview: {
+        id: selectedInterview.id,
+        status: selectedInterview.status,
+        phase: selectedInterview.phase,
+        jobTitle: jobTitle(selectedInterview.jobId),
+        candidateName: candidateName(selectedInterview.candidateId)
+      },
+      recommendation: {
+        synthesizedRecommendation: scorecard.synthesizedRecommendation,
+        synthesisRationale: scorecard.synthesisRationale,
+        overallScores: scorecard.overallScores
+      },
+      humanDecision: scorecard.humanDecision ?? null,
+      agentEvidence: (scorecard.agentArtifacts ?? []).map((artifact) => ({
+        agentId: artifact.agentId,
+        recommendation: artifact.recommendation,
+        recommendationRationale: artifact.recommendationRationale,
+        evidenceSnapshot: artifactEvidenceLines(artifact),
+        strengths: artifact.strengths,
+        concerns: artifact.concerns
+      })),
+      transcript
+    };
+  };
+
+  const downloadReviewPacketJson = () => {
+    const packet = buildReviewPacket();
+    if (!packet) return;
+
+    const content = JSON.stringify(packet, null, 2);
+    const blob = new Blob([content], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const candidatePart = safeFileSegment(
+      packet.interview.candidateName || "candidate"
+    );
+    anchor.href = url;
+    anchor.download = `review-packet-${candidatePart}-${packet.interview.id}.json`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const downloadReviewPacketPdf = async () => {
+    const packet = buildReviewPacket();
+    if (!packet) return;
+
+    setExportingPdf(true);
+    try {
+      const { jsPDF } = await import("jspdf");
+      const doc = new jsPDF({ unit: "pt", format: "letter" });
+      const margin = 40;
+      const maxWidth = doc.internal.pageSize.getWidth() - margin * 2;
+      const pageBottom = doc.internal.pageSize.getHeight() - margin;
+      let y = margin;
+
+      const ensureSpace = (lineCount = 1, lineHeight = 14) => {
+        if (y + lineCount * lineHeight > pageBottom) {
+          doc.addPage();
+          y = margin;
+        }
+      };
+
+      const writeHeading = (text: string, size = 13) => {
+        ensureSpace(2, 20);
+        doc.setFont("helvetica", "bold");
+        doc.setFontSize(size);
+        doc.text(text, margin, y);
+        y += size + 8;
+      };
+
+      const writeBody = (text: string, size = 10) => {
+        const lines = doc.splitTextToSize(text, maxWidth) as string[];
+        doc.setFont("helvetica", "normal");
+        doc.setFontSize(size);
+        for (const line of lines) {
+          ensureSpace(1, size + 4);
+          doc.text(line, margin, y);
+          y += size + 4;
+        }
+      };
+
+      writeHeading("PanelAI Review Packet", 16);
+      writeBody(`Generated: ${new Date(packet.generatedAt).toLocaleString()}`);
+      writeBody(`Interview ID: ${packet.interview.id}`);
+      writeBody(`Candidate: ${packet.interview.candidateName}`);
+      writeBody(`Role: ${packet.interview.jobTitle}`);
+      y += 6;
+
+      writeHeading("Recommendation Summary");
+      writeBody(
+        `Synthesized recommendation: ${prettyKey(packet.recommendation.synthesizedRecommendation)}`
+      );
+      writeBody(
+        `Rationale: ${packet.recommendation.synthesisRationale || "No synthesis rationale provided."}`
+      );
+      if (packet.humanDecision) {
+        writeBody(
+          `Human decision: ${packet.humanDecision.decision} by ${packet.humanDecision.decidedBy} at ${new Date(packet.humanDecision.decidedAt).toLocaleString()}`
+        );
+        if (packet.humanDecision.notes) {
+          writeBody(`Decision notes: ${packet.humanDecision.notes}`);
+        }
+      }
+      y += 6;
+
+      writeHeading("Agent Evidence Snapshot");
+      for (const evidence of packet.agentEvidence) {
+        writeBody(
+          `${prettyKey(evidence.agentId)} - ${prettyKey(evidence.recommendation)}`
+        );
+        writeBody(
+          `Reasoning: ${evidence.recommendationRationale || "No rationale provided."}`
+        );
+        if (evidence.evidenceSnapshot.length > 0) {
+          for (const line of evidence.evidenceSnapshot) {
+            writeBody(`- ${line}`);
+          }
+        } else {
+          writeBody("- No explicit evidence lines provided.");
+        }
+        y += 4;
+      }
+
+      writeHeading("Interview Transcript");
+      if (packet.transcript.length === 0) {
+        writeBody("No transcript captured.");
+      } else {
+        for (const turn of packet.transcript) {
+          const speaker =
+            turn.role === "candidate" ? "Candidate" : turn.speaker || "Panel";
+          writeBody(`${speaker}: ${turn.text}`);
+          y += 2;
+        }
+      }
+
+      const candidatePart = safeFileSegment(
+        packet.interview.candidateName || "candidate"
+      );
+      doc.save(`review-packet-${candidatePart}-${packet.interview.id}.pdf`);
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   return (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: selected ? "1fr 1fr" : "1fr",
+        gridTemplateColumns: selected
+          ? "minmax(300px, 0.8fr) minmax(620px, 1.4fr)"
+          : "1fr",
         gap: 20,
         alignItems: "start"
       }}
@@ -1787,7 +2343,7 @@ function InterviewsTab({
       {selected && selectedInterview && (
         <div
           style={{
-            padding: "18px 20px",
+            padding: "22px 24px",
             borderRadius: 10,
             background: "rgba(2,6,23,0.6)",
             border: "1px solid rgba(148,163,184,0.12)"
@@ -1809,14 +2365,39 @@ function InterviewsTab({
                 {jobTitle(selectedInterview.jobId)}
               </div>
             </div>
-            {statusBadge(
-              scorecard &&
-                selectedInterview.status === "scheduled" &&
-                scorecard.status !== "decided"
-                ? "deliberation"
-                : selectedInterview.status
-            )}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              {scorecard && (
+                <>
+                  <button
+                    type="button"
+                    onClick={downloadReviewPacketJson}
+                    style={btnGhost}
+                  >
+                    Download JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void downloadReviewPacketPdf();
+                    }}
+                    disabled={exportingPdf}
+                    style={btnGhost}
+                  >
+                    {exportingPdf ? "Building PDF..." : "Download PDF"}
+                  </button>
+                </>
+              )}
+              {statusBadge(
+                scorecard &&
+                  selectedInterview.status === "scheduled" &&
+                  scorecard.status !== "decided"
+                  ? "deliberation"
+                  : selectedInterview.status
+              )}
+            </div>
           </div>
+
+          <AgentOfficePanel interviewId={selectedInterview.id} />
 
           {scorecard ? (
             <>
@@ -1926,6 +2507,94 @@ function InterviewsTab({
                         marginBottom: 10
                       }}
                     >
+                      VERDICT EVIDENCE SNAPSHOT
+                    </div>
+                    <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>
+                      {scorecard.agentArtifacts.map((artifact, idx) => {
+                        const meta = getAgentMeta(artifact.agentId);
+                        const evidenceLines = artifactEvidenceLines(artifact);
+                        return (
+                          <div
+                            key={`${artifact.agentId}-${idx}-evidence`}
+                            style={{
+                              borderRadius: 8,
+                              padding: "10px 12px",
+                              background: "rgba(15,23,42,0.65)",
+                              border: `1px solid ${meta.color}26`
+                            }}
+                          >
+                            <div
+                              style={{
+                                display: "flex",
+                                justifyContent: "space-between",
+                                alignItems: "center",
+                                marginBottom: 6
+                              }}
+                            >
+                              <span
+                                style={{
+                                  color: "#e2e8f0",
+                                  fontSize: 12,
+                                  fontWeight: 600
+                                }}
+                              >
+                                {meta.displayName}
+                              </span>
+                              <span
+                                style={{
+                                  ...recommendationStyle(
+                                    artifact.recommendation
+                                  ),
+                                  borderRadius: 4,
+                                  padding: "2px 6px",
+                                  fontSize: 10,
+                                  fontWeight: 700
+                                }}
+                              >
+                                {prettyKey(artifact.recommendation)}
+                              </span>
+                            </div>
+                            {evidenceLines.length > 0 ? (
+                              <div style={{ display: "grid", gap: 4 }}>
+                                {evidenceLines.map((line) => (
+                                  <div
+                                    key={line}
+                                    style={{
+                                      fontSize: 11,
+                                      color: "#94a3b8",
+                                      lineHeight: 1.4
+                                    }}
+                                  >
+                                    {line}
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <div
+                                style={{
+                                  fontSize: 11,
+                                  color: "#64748b",
+                                  lineHeight: 1.4
+                                }}
+                              >
+                                No explicit evidence lines provided by this
+                                artifact.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+
+                    <div
+                      style={{
+                        fontSize: 11,
+                        fontWeight: 700,
+                        color: "#64748b",
+                        letterSpacing: "0.08em",
+                        marginBottom: 10
+                      }}
+                    >
                       PANEL FEEDBACK — click any card to expand
                     </div>
                     <div style={{ display: "grid", gap: 8 }}>
@@ -1935,6 +2604,85 @@ function InterviewsTab({
                     </div>
                   </div>
                 )}
+
+              <div style={{ marginBottom: 16 }}>
+                <div
+                  style={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "#64748b",
+                    letterSpacing: "0.08em",
+                    marginBottom: 10
+                  }}
+                >
+                  INTERVIEW TRANSCRIPT (MANAGER REVIEW)
+                </div>
+                <div
+                  style={{
+                    borderRadius: 8,
+                    background: "rgba(2,6,23,0.5)",
+                    border: "1px solid rgba(148,163,184,0.12)",
+                    maxHeight: 320,
+                    overflowY: "auto",
+                    padding: "10px 12px",
+                    display: "grid",
+                    gap: 8
+                  }}
+                >
+                  {transcriptLoading ? (
+                    <div style={{ fontSize: 12, color: "#64748b" }}>
+                      Loading transcript…
+                    </div>
+                  ) : transcript.length === 0 ? (
+                    <div style={{ fontSize: 12, color: "#64748b" }}>
+                      No transcript captured for this interview.
+                    </div>
+                  ) : (
+                    transcript.map((turn, idx) => (
+                      <div
+                        key={`${turn.role}-${idx}-${turn.text.slice(0, 24)}`}
+                        style={{
+                          padding: "8px 10px",
+                          borderRadius: 6,
+                          background:
+                            turn.role === "candidate"
+                              ? "rgba(37,99,235,0.08)"
+                              : "rgba(99,102,241,0.08)",
+                          border:
+                            turn.role === "candidate"
+                              ? "1px solid rgba(59,130,246,0.18)"
+                              : "1px solid rgba(99,102,241,0.18)"
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 10.5,
+                            fontWeight: 700,
+                            color:
+                              turn.role === "candidate" ? "#93c5fd" : "#a5b4fc",
+                            letterSpacing: "0.06em",
+                            marginBottom: 4
+                          }}
+                        >
+                          {turn.role === "candidate"
+                            ? "Candidate"
+                            : turn.speaker || "Panel"}
+                        </div>
+                        <div
+                          style={{
+                            fontSize: 12,
+                            color: "#cbd5e1",
+                            lineHeight: 1.5,
+                            whiteSpace: "pre-wrap" as const
+                          }}
+                        >
+                          {turn.text}
+                        </div>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
 
               {canTakeDecision && (
                 <div>
