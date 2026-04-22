@@ -16,3 +16,6 @@ export * from "./interview.js";
 
 // Memory types
 export * from "./memory.js";
+
+// Bias audit types
+export * from "./bias-audit.js";

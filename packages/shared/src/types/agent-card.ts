@@ -70,6 +70,8 @@ export type AgentRole =
   | "technical"
   | "culture"
   | "domain-expert"
+  | "behavioral"
+  | "bias-audit"
   | "jarvis";
 
 /** Minimal agent reference for cross-agent communication */

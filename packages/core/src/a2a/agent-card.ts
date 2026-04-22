@@ -97,6 +97,29 @@ const DEFAULT_CAPABILITIES: Record<AgentRole, AgentCapability[]> = {
       description: "Query RAG knowledge base for role-specific context"
     }
   ],
+  behavioral: [
+    {
+      name: "behavioral-interview",
+      description: "Conduct behavioral interview segment"
+    },
+    {
+      name: "star-probing",
+      description:
+        "Probe for specific situation, action, and measurable result details"
+    },
+    {
+      name: "behavioral-evaluation",
+      description:
+        "Assess ownership, resilience, and learning orientation from examples"
+    }
+  ],
+  "bias-audit": [
+    {
+      name: "review-panel",
+      description:
+        "Review panel artifacts for score divergence, proxy language, and strengths contradictions"
+    }
+  ],
   jarvis: [
     {
       name: "general-assistant",
@@ -140,6 +163,18 @@ const DEFAULT_PERSONALITIES: Record<AgentRole, PersonalityConfig> = {
     traits: ["knowledgeable", "practical", "detailed"],
     systemPromptAdditions:
       "You are the domain expert. Ask role-specific questions based on the job requirements."
+  },
+  behavioral: {
+    style: "friendly",
+    traits: ["observant", "calm", "evidence-driven"],
+    systemPromptAdditions:
+      "You are the behavioral interviewer. Ask for concrete examples and evaluate learning, ownership, and response under pressure."
+  },
+  "bias-audit": {
+    style: "formal",
+    traits: ["analytical", "impartial", "systematic"],
+    systemPromptAdditions:
+      "You are the Bias Auditor. Silently review agent artifacts for fairness. Flag proxy language, score divergence, and contradictions."
   },
   jarvis: {
     style: "casual",
@@ -246,7 +281,8 @@ export function initializeDefaultAgents(): void {
     "recruiter",
     "technical",
     "culture",
-    "domain-expert"
+    "domain-expert",
+    "behavioral"
   ];
 
   for (const role of coreRoles) {

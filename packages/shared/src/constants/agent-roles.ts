@@ -11,6 +11,8 @@ export const AGENT_ROLES: readonly AgentRole[] = [
   "technical",
   "culture",
   "domain-expert",
+  "behavioral",
+  "bias-audit",
   "jarvis"
 ] as const;
 
@@ -21,6 +23,8 @@ export const AGENT_ROLE_NAMES: Record<AgentRole, string> = {
   technical: "Technical Interviewer",
   culture: "Culture & Values",
   "domain-expert": "Domain Expert",
+  behavioral: "Behavioral Interviewer",
+  "bias-audit": "Bias Auditor",
   jarvis: "Jarvis"
 } as const;
 
@@ -35,6 +39,10 @@ export const AGENT_ROLE_DESCRIPTIONS: Record<AgentRole, string> = {
   culture:
     "Assesses culture fit, communication style, and alignment with company values.",
   "domain-expert": "Probes domain-specific expertise relevant to the role.",
+  behavioral:
+    "Assesses behavioral signals using evidence-backed STAR-style probing and reflection.",
+  "bias-audit":
+    "Silent observer that reviews panel output for proxy-language, score divergence, and strengths contradictions.",
   jarvis: "General-purpose voice assistant."
 } as const;
 
@@ -45,6 +53,8 @@ export const DEFAULT_VOICE_IDS: Record<AgentRole, string> = {
   technical: "aura-orion-en", // Technical male
   culture: "aura-stella-en", // Warm female
   "domain-expert": "aura-arcas-en", // Authoritative male
+  behavioral: "aura-athena-en", // Analytical female
+  "bias-audit": "aura-asteria-en", // Neutral (silent observer, rarely speaks)
   jarvis: "aura-asteria-en" // Default
 } as const;
 
@@ -52,5 +62,6 @@ export const DEFAULT_VOICE_IDS: Record<AgentRole, string> = {
 export const PANEL_AGENT_ROLES: readonly AgentRole[] = [
   "technical",
   "culture",
-  "domain-expert"
+  "domain-expert",
+  "behavioral"
 ] as const;

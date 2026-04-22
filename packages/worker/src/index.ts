@@ -5,7 +5,9 @@ import {
   RecruiterAgent,
   TechnicalInterviewerAgent,
   CultureInterviewerAgent,
-  DomainExpertAgent
+  DomainExpertAgent,
+  BehavioralInterviewerAgent,
+  BiasAuditAgent
 } from "@panelai/agents";
 import { SharedMemoryDO } from "@panelai/core";
 import type {
@@ -61,6 +63,12 @@ interface InterviewRecord {
   decisionNotes?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+interface PanelTranscriptTurn {
+  role: "candidate" | "panel";
+  speaker?: string;
+  text: string;
 }
 
 interface SharedMemoryEntry<T> {
@@ -195,6 +203,42 @@ function mapGreenhouseStatus(status?: string): JobRequisition["status"] {
   }
 
   return "open";
+}
+
+function normalizePanelTranscript(input: unknown): PanelTranscriptTurn[] {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const normalized: PanelTranscriptTurn[] = [];
+
+  for (const entry of input) {
+    if (typeof entry !== "object" || entry === null) {
+      continue;
+    }
+
+    const turn = entry as {
+      role?: unknown;
+      speaker?: unknown;
+      text?: unknown;
+    };
+
+    const role =
+      turn.role === "candidate" || turn.role === "panel" ? turn.role : null;
+    const text = typeof turn.text === "string" ? turn.text.trim() : "";
+    const speaker =
+      typeof turn.speaker === "string" && turn.speaker.trim().length > 0
+        ? turn.speaker.trim()
+        : undefined;
+
+    if (!role || text.length === 0) {
+      continue;
+    }
+
+    normalized.push({ role, speaker, text });
+  }
+
+  return normalized.slice(-80);
 }
 
 /**
@@ -589,6 +633,22 @@ export default {
       return Response.json(scorecard);
     }
 
+    const interviewActivityMatch = url.pathname.match(
+      /^\/api\/interviews\/([^/]+)\/activity$/
+    );
+    if (interviewActivityMatch && request.method === "GET") {
+      const interviewId = decodeURIComponent(interviewActivityMatch[1]);
+      const since = url.searchParams.get("since") ?? "";
+      const limit = url.searchParams.get("limit") ?? "200";
+      const params = new URLSearchParams({ interviewId, limit });
+      if (since) params.set("since", since);
+      const response = await sharedMemory.fetch(
+        `https://shared-memory/activity?${params.toString()}`,
+        { method: "GET" }
+      );
+      return response;
+    }
+
     const interviewDecisionMatch = url.pathname.match(
       /^\/api\/interviews\/([^/]+)\/decision$/
     );
@@ -655,6 +715,45 @@ export default {
         decision: payload.decision,
         orchestrator: orchestratorPayload
       });
+    }
+
+    if (url.pathname === "/api/approvals/pending" && request.method === "GET") {
+      const orchestrator = env.ORCHESTRATOR.get(
+        env.ORCHESTRATOR.idFromName("agent-orchestrator")
+      );
+      const response = await orchestrator.fetch("https://agent/tasks/pending", {
+        method: "GET"
+      });
+      return response;
+    }
+
+    const approvalResolveMatch = url.pathname.match(
+      /^\/api\/approvals\/([^/]+)\/resolve$/
+    );
+    if (approvalResolveMatch && request.method === "POST") {
+      const taskId = decodeURIComponent(approvalResolveMatch[1]);
+      const body = (await request.json().catch(() => ({}))) as {
+        approved?: boolean;
+        choice?: string;
+        notes?: string;
+      };
+
+      const orchestrator = env.ORCHESTRATOR.get(
+        env.ORCHESTRATOR.idFromName("agent-orchestrator")
+      );
+      const response = await orchestrator.fetch(
+        `https://agent/tasks/${encodeURIComponent(taskId)}/resolve`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            approved: Boolean(body.approved),
+            choice: body.choice,
+            notes: body.notes
+          })
+        }
+      );
+      return response;
     }
 
     if (url.pathname === "/transcribe" && request.method === "POST") {
@@ -998,7 +1097,10 @@ export default {
       const payload = (await request.json()) as {
         interviewId: string;
         candidateId: string;
+        transcript?: PanelTranscriptTurn[];
       };
+
+      const transcript = normalizePanelTranscript(payload.transcript);
 
       const existingInterview = await sharedGetValue<InterviewRecord>(
         sharedMemory,
@@ -1026,6 +1128,12 @@ export default {
         `interview:${payload.interviewId}`,
         inProgressInterview
       );
+      await sharedSetValue(
+        sharedMemory,
+        `interview:${payload.interviewId}`,
+        "panelTranscript",
+        transcript
+      );
 
       const orchestrator = env.ORCHESTRATOR.get(
         env.ORCHESTRATOR.idFromName("agent-orchestrator")
@@ -1038,7 +1146,11 @@ export default {
           body: JSON.stringify({
             taskId: crypto.randomUUID(),
             type: "run-panel-interview",
-            payload,
+            payload: {
+              interviewId: payload.interviewId,
+              candidateId: payload.candidateId,
+              transcript
+            },
             from: { id: "worker", name: "Worker", role: "orchestrator" }
           })
         }
@@ -1051,6 +1163,28 @@ export default {
             error: "Failed to run panel interview delegation"
           },
           { status: orchestratorResponse.status }
+        );
+      }
+
+      const orchestratorPayload = await orchestratorResponse
+        .json()
+        .catch(() => null);
+
+      const orchestratorData = (
+        orchestratorPayload as {
+          data?: { handled?: boolean; error?: string };
+        } | null
+      )?.data;
+      if (!orchestratorData?.handled) {
+        return Response.json(
+          {
+            success: false,
+            error:
+              orchestratorData?.error ??
+              "Panel interview did not produce complete specialist artifacts.",
+            orchestrator: orchestratorPayload
+          },
+          { status: 502 }
         );
       }
 
@@ -1068,15 +1202,24 @@ export default {
         deliberationInterview
       );
 
-      const orchestratorPayload = await orchestratorResponse
-        .json()
-        .catch(() => null);
-
       return Response.json({
         success: true,
         interview: deliberationInterview,
         orchestrator: orchestratorPayload
       });
+    }
+
+    const interviewTranscriptMatch = url.pathname.match(
+      /^\/api\/interviews\/([^/]+)\/transcript$/
+    );
+    if (interviewTranscriptMatch && request.method === "GET") {
+      const interviewId = decodeURIComponent(interviewTranscriptMatch[1]);
+      const transcript = await sharedGetValue<PanelTranscriptTurn[]>(
+        sharedMemory,
+        `interview:${interviewId}`,
+        "panelTranscript"
+      );
+      return Response.json(transcript ?? []);
     }
 
     if (url.pathname === "/api/human-decision" && request.method === "POST") {
@@ -1143,6 +1286,95 @@ export default {
       return Response.json(entry?.value ?? null);
     }
 
+    // ── ElevenLabs TTS ─────────────────────────────────────────────────────
+    if (url.pathname === "/api/tts/elevenlabs" && request.method === "POST") {
+      const elevenKey = (envVars as Record<string, string | undefined>)
+        .ELEVENLABS_API_KEY;
+      if (!elevenKey) {
+        return Response.json(
+          { error: "ElevenLabs API key not configured" },
+          { status: 503 }
+        );
+      }
+
+      const { text, agentId } = (await request.json()) as {
+        text?: string;
+        agentId?: string;
+      };
+
+      if (!text?.trim()) {
+        return Response.json({ error: "No text provided" }, { status: 400 });
+      }
+
+      const voiceMap: Record<string, string> = {
+        orchestrator:
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_ORCHESTRATOR ?? "onwK4e9ZLuTAKqWW03F9",
+        recruiter:
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_RECRUITER ?? "EXAVITQu4vr4xnSDxMaL",
+        technical:
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_TECHNICAL ?? "TX3LPaxmHKxFdv7VOQHJ",
+        culture:
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_CULTURE ?? "XrExE9yKIg1WjnnlVkGX",
+        domain:
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_DOMAIN ?? "bIHbv24MWmeRgasZH58o",
+        "domain-expert":
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_DOMAIN ?? "bIHbv24MWmeRgasZH58o",
+        behavioral:
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_BEHAVIORAL ?? "XB0fDUnXU5powFXDhCwa",
+        "bias-audit":
+          (envVars as Record<string, string | undefined>)
+            .ELEVENLABS_VOICE_ORCHESTRATOR ?? "onwK4e9ZLuTAKqWW03F9"
+      };
+
+      const voiceId =
+        voiceMap[agentId ?? "orchestrator"] ?? "onwK4e9ZLuTAKqWW03F9";
+
+      try {
+        const ttsResp = await fetch(
+          `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream`,
+          {
+            method: "POST",
+            headers: {
+              "xi-api-key": elevenKey,
+              "Content-Type": "application/json",
+              Accept: "audio/mpeg"
+            },
+            body: JSON.stringify({
+              text: text.trim(),
+              model_id: "eleven_turbo_v2_5",
+              voice_settings: { stability: 0.45, similarity_boost: 0.75 }
+            })
+          }
+        );
+
+        if (!ttsResp.ok) {
+          const err = await ttsResp.text();
+          console.error("ElevenLabs error:", err);
+          return Response.json(
+            { error: "TTS upstream error" },
+            { status: 502 }
+          );
+        }
+
+        return new Response(ttsResp.body, {
+          headers: {
+            "Content-Type": "audio/mpeg",
+            "Cache-Control": "no-store"
+          }
+        });
+      } catch (err) {
+        console.error("ElevenLabs TTS error:", err);
+        return Response.json({ error: "TTS request failed" }, { status: 500 });
+      }
+    }
+
     // Let agent routes resolve first.
     const agentResponse = await routeAgentRequest(request, env);
     if (agentResponse) {
@@ -1166,4 +1398,6 @@ export { RecruiterAgent };
 export { TechnicalInterviewerAgent };
 export { CultureInterviewerAgent };
 export { DomainExpertAgent };
+export { BehavioralInterviewerAgent };
+export { BiasAuditAgent };
 export { SharedMemoryDO };

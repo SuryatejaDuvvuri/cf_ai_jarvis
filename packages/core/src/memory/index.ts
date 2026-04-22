@@ -3,4 +3,10 @@
  */
 
 export { PrivateMemoryImpl, LegacyMemoryAdapter } from "./private-memory.js";
-export { SharedMemoryDO, SharedMemoryClient } from "./shared-memory.js";
+export {
+  SharedMemoryDO,
+  SharedMemoryClient,
+  type ActivityEvent,
+  type ActivityEventInput,
+  type ActivityEventType
+} from "./shared-memory.js";

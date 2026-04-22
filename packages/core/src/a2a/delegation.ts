@@ -206,6 +206,8 @@ function getBindingNameForRole(role: AgentRole): string {
     technical: "TECHNICAL_INTERVIEWER",
     culture: "CULTURE_INTERVIEWER",
     "domain-expert": "DOMAIN_EXPERT",
+    behavioral: "BEHAVIORAL_INTERVIEWER",
+    "bias-audit": "BIAS_AUDIT",
     jarvis: "Chat" // Existing Jarvis binding
   };
 

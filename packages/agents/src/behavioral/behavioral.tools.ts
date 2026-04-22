@@ -1,7 +1,7 @@
 import type { InterviewerArtifact, RecommendationLevel } from "@panelai/shared";
 import type { SpecialistInterviewPayload } from "../interview/evaluation.js";
 
-export interface ConductCultureInterviewPayload extends SpecialistInterviewPayload {}
+export interface ConductBehavioralInterviewPayload extends SpecialistInterviewPayload {}
 
 function clampScore(value: number): 1 | 2 | 3 | 4 | 5 {
   const rounded = Math.round(value);
@@ -17,7 +17,9 @@ function countKeywordHits(text: string, keywords: string[]): number {
   }, 0);
 }
 
-function extractCandidateText(payload: ConductCultureInterviewPayload): string {
+function extractCandidateText(
+  payload: ConductBehavioralInterviewPayload
+): string {
   const turns = payload.transcript ?? [];
   return turns
     .filter((turn) => turn.role === "candidate")
@@ -29,7 +31,7 @@ function extractCandidateText(payload: ConductCultureInterviewPayload): string {
 
 function summarizeCandidateResponse(candidateText: string): string {
   if (!candidateText.trim()) {
-    return "Candidate provided limited collaboration and values evidence in the transcript.";
+    return "Candidate provided limited behavioral evidence in the transcript.";
   }
 
   const sentence = candidateText
@@ -38,7 +40,7 @@ function summarizeCandidateResponse(candidateText: string): string {
     .find((part) => part.length > 0);
 
   if (!sentence) {
-    return "Candidate responses were brief and lacked specific interpersonal examples.";
+    return "Candidate responses were brief and lacked concrete behavioral examples.";
   }
 
   return `${sentence.slice(0, 180)}${sentence.length > 180 ? "..." : ""}`;
@@ -52,7 +54,7 @@ function recommendationFromAverage(avg: number): RecommendationLevel {
 }
 
 function extractPanelQuestions(
-  payload: ConductCultureInterviewPayload,
+  payload: ConductBehavioralInterviewPayload,
   fallbackSummary: string
 ): InterviewerArtifact["questionsAsked"] {
   const panelTurns = (payload.transcript ?? [])
@@ -69,7 +71,7 @@ function extractPanelQuestions(
     return [
       {
         question:
-          "Tell me about a disagreement with a teammate and how you moved the work forward.",
+          "Tell me about a time you made a difficult judgment call under pressure and what happened next.",
         responseSummary: fallbackSummary
       }
     ];
@@ -81,94 +83,93 @@ function extractPanelQuestions(
   }));
 }
 
-export function conductCultureInterview(
+export function conductBehavioralInterview(
   agentId: string,
-  payload: ConductCultureInterviewPayload
+  payload: ConductBehavioralInterviewPayload
 ) {
   const candidateText = extractCandidateText(payload);
+
+  const ownershipSignals = countKeywordHits(candidateText, [
+    "owned",
+    "ownership",
+    "accountable",
+    "initiative",
+    "decision",
+    "tradeoff",
+    "impact",
+    "result",
+    "learned",
+    "improve"
+  ]);
 
   const collaborationSignals = countKeywordHits(candidateText, [
     "team",
     "collabor",
-    "feedback",
-    "stakeholder",
     "conflict",
-    "align",
-    "mentor",
-    "support",
+    "feedback",
     "communicat",
+    "stakeholder",
+    "support",
+    "mentor",
     "listen"
   ]);
 
-  const ownershipSignals = countKeywordHits(candidateText, [
-    "own",
-    "accountable",
-    "initiative",
-    "deliver",
-    "follow through",
-    "responsib",
-    "impact",
-    "retrospective",
-    "learn",
-    "improve"
-  ]);
-
-  const collaborationScore = clampScore(
-    2 + collaborationSignals / 3 - (candidateText.length < 170 ? 0.6 : 0)
-  );
   const ownershipScore = clampScore(
-    2 + ownershipSignals / 3 - (candidateText.length < 170 ? 0.6 : 0)
+    2 + ownershipSignals / 3 - (candidateText.length < 170 ? 0.7 : 0)
+  );
+  const collaborationScore = clampScore(
+    2 + collaborationSignals / 3 - (candidateText.length < 170 ? 0.7 : 0)
   );
 
   const recommendation = recommendationFromAverage(
-    (collaborationScore + ownershipScore) / 2
+    (ownershipScore + collaborationScore) / 2
   );
-
   const candidateSummary = summarizeCandidateResponse(candidateText);
+
   const strengths: InterviewerArtifact["strengths"] = [];
   const concerns: InterviewerArtifact["concerns"] = [];
 
-  if (collaborationScore >= 4) {
+  if (ownershipScore >= 4) {
     strengths.push({
-      point: "Strong collaboration and communication habits",
+      point: "Demonstrates ownership under ambiguity",
       evidence:
-        "Candidate described cross-functional alignment, feedback loops, and constructive conflict handling."
+        "Candidate described accountable decision-making with clear follow-through."
     });
   } else {
     concerns.push({
-      point: "Collaboration evidence remains thin",
+      point: "Ownership signal needs stronger evidence",
       evidence:
-        "Transcript contains limited concrete examples of team dynamics under pressure."
+        "Transcript lacked concrete examples showing end-to-end accountability."
     });
   }
 
-  if (ownershipScore >= 4) {
+  if (collaborationScore >= 4) {
     strengths.push({
-      point: "Clear ownership mindset",
+      point: "Collaborates effectively in high-friction situations",
       evidence:
-        "Candidate highlighted follow-through, accountability, and delivery impact."
+        "Candidate referenced conflict handling, communication, and alignment behaviors."
     });
   } else {
     concerns.push({
-      point: "Ownership examples could be more outcome-oriented",
+      point: "Behavioral collaboration evidence is limited",
       evidence:
-        "Candidate narrative lacked measurable outcomes for decisions and execution."
+        "Candidate responses did not provide enough specific interpersonal examples."
     });
   }
 
   if (strengths.length === 0) {
     strengths.push({
-      point: "Baseline interpersonal fit",
+      point: "Baseline behavioral readiness",
       evidence:
-        "Candidate responses suggest workable communication norms with room for deeper probing."
+        "Candidate showed some judgment and teamwork signal, though deeper probing is needed."
     });
   }
 
   if (concerns.length === 0) {
     concerns.push({
-      point: "Ambiguity resilience should be probed further",
+      point: "Stress-response evidence can be deepened",
       evidence:
-        "Additional scenarios can test adaptability in uncertain environments."
+        "Additional scenario-based probing can validate consistency under pressure."
     });
   }
 
@@ -178,25 +179,26 @@ export function conductCultureInterview(
     interviewId: payload.interviewId ?? "unknown-interview",
     timestamp: new Date().toISOString(),
     scores: {
-      collaboration: {
-        score: collaborationScore,
-        jdRequirement: "Effective collaboration in cross-functional teams",
-        evidence: `Detected ${collaborationSignals} collaboration/communication signals in candidate responses.`,
-        justification:
-          "Score reflects evidence of teamwork, feedback behavior, and alignment in the transcript."
-      },
       ownership: {
         score: ownershipScore,
-        jdRequirement: "Takes ownership and follows through",
-        evidence: `Detected ${ownershipSignals} ownership/accountability signals in candidate responses.`,
+        jdRequirement: "Takes ownership and follows through under pressure",
+        evidence: `Detected ${ownershipSignals} ownership/judgment signals in candidate responses.`,
         justification:
-          "Score reflects initiative, accountability language, and delivery follow-through indicators."
+          "Score reflects accountability language, decision ownership, and outcome awareness."
+      },
+      collaboration: {
+        score: collaborationScore,
+        jdRequirement:
+          "Works effectively with others through conflict and ambiguity",
+        evidence: `Detected ${collaborationSignals} collaboration/conflict signals in candidate responses.`,
+        justification:
+          "Score reflects communication quality, conflict handling, and team alignment behaviors."
       }
     },
     strengths,
     concerns,
     recommendation,
-    recommendationRationale: `Culture assessment resulted in ${recommendation} based on transcript-grounded collaboration and ownership evidence.`,
+    recommendationRationale: `Behavioral assessment resulted in ${recommendation} based on transcript-grounded ownership and collaboration evidence.`,
     requiresApproval: true,
     questionsAsked: extractPanelQuestions(payload, candidateSummary)
   };
@@ -204,7 +206,7 @@ export function conductCultureInterview(
   return {
     handled: true,
     recommendation,
-    summary: "Culture interview completed",
+    summary: "Behavioral interview completed",
     artifact
   };
 }

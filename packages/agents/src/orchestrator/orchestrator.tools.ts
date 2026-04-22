@@ -1,5 +1,6 @@
 import type {
   CombinedScorecard,
+  DeliberationComment,
   InterviewerArtifact,
   RecommendationLevel,
   RecruiterArtifact
@@ -96,6 +97,9 @@ export function buildCombinedScorecard(params: {
   interviewId: string;
   candidateId: string;
   artifacts: InterviewerArtifact[];
+  deliberationComments?: DeliberationComment[];
+  synthesizedRecommendation?: RecommendationLevel;
+  synthesisRationale?: string;
 }): CombinedScorecard {
   const recommendationValues = params.artifacts.map((artifact) =>
     recommendationOrder.indexOf(artifact.recommendation)
@@ -110,10 +114,12 @@ export function buildCombinedScorecard(params: {
     interviewId: params.interviewId,
     candidateId: params.candidateId,
     agentArtifacts: params.artifacts,
-    deliberationComments: [],
-    synthesizedRecommendation: worstRecommendation,
+    deliberationComments: params.deliberationComments ?? [],
+    synthesizedRecommendation:
+      params.synthesizedRecommendation ?? worstRecommendation,
     synthesisRationale:
-      "Synthesized from technical, culture, and domain interviewer outputs. Human review required for final decision.",
+      params.synthesisRationale ??
+      "Synthesized from specialist interviewer outputs. Human review required for final decision.",
     overallScores: {
       technical: averageScore(
         params.artifacts.map((a) => a.scores.technicalDepth?.score ?? 3)
@@ -140,7 +146,18 @@ export async function persistPanelOutput(
   if (!sharedMemory) return;
 
   const scope = `interview:${interviewId}`;
-  const [technicalArtifact, cultureArtifact, domainArtifact] = artifacts;
+  const technicalArtifact = artifacts.find((artifact) =>
+    artifact.agentId.toLowerCase().includes("technical")
+  );
+  const cultureArtifact = artifacts.find((artifact) =>
+    artifact.agentId.toLowerCase().includes("culture")
+  );
+  const domainArtifact = artifacts.find((artifact) =>
+    artifact.agentId.toLowerCase().includes("domain")
+  );
+  const behavioralArtifact = artifacts.find((artifact) =>
+    artifact.agentId.toLowerCase().includes("behavioral")
+  );
 
   if (technicalArtifact) {
     await sharedMemory.setScoped(scope, "technicalArtifact", technicalArtifact);
@@ -150,6 +167,13 @@ export async function persistPanelOutput(
   }
   if (domainArtifact) {
     await sharedMemory.setScoped(scope, "domainArtifact", domainArtifact);
+  }
+  if (behavioralArtifact) {
+    await sharedMemory.setScoped(
+      scope,
+      "behavioralArtifact",
+      behavioralArtifact
+    );
   }
 
   await sharedMemory.setScoped(scope, "combinedScorecard", scorecard);

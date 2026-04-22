@@ -13,6 +13,37 @@ import type {
   InterviewSharedContext
 } from "@panelai/shared";
 
+/** Activity event — a visible unit of backend agent work */
+export type ActivityEventType =
+  | "turn-started"
+  | "turn-produced"
+  | "turn-failed"
+  | "delegation-started"
+  | "delegation-completed"
+  | "delegation-failed"
+  | "scoring-started"
+  | "score-produced"
+  | "deliberation-started"
+  | "deliberation-completed"
+  | "memory-write"
+  | "route-selected"
+  | "bias-flag";
+
+export interface ActivityEventInput {
+  agentId: string;
+  agentRole?: string;
+  type: ActivityEventType;
+  summary: string;
+  metadata?: Record<string, unknown>;
+}
+
+export interface ActivityEvent extends ActivityEventInput {
+  id: string;
+  timestamp: string;
+}
+
+const ACTIVITY_LIMIT = 500;
+
 /** SQL storage value type (from Cloudflare types) */
 type SqlStorageValue = ArrayBuffer | string | number | null;
 
@@ -190,6 +221,26 @@ export class SharedMemoryDO {
         };
         await this.addQuestionAsked(body.interviewId, body.question);
         return Response.json({ success: true });
+      }
+
+      if (request.method === "POST" && path === "/add-activity") {
+        const body = (await request.json()) as {
+          interviewId: string;
+          event: ActivityEventInput;
+        };
+        const saved = await this.addActivity(body.interviewId, body.event);
+        return Response.json({ success: true, event: saved });
+      }
+
+      if (request.method === "GET" && path === "/activity") {
+        const interviewId = url.searchParams.get("interviewId");
+        if (!interviewId) {
+          return new Response("Missing interviewId parameter", { status: 400 });
+        }
+        const since = url.searchParams.get("since") ?? undefined;
+        const limit = parseInt(url.searchParams.get("limit") ?? "200", 10);
+        const events = await this.listActivity(interviewId, { since, limit });
+        return Response.json(events);
       }
 
       if (request.method === "POST" && path === "/add-key-point") {
@@ -438,6 +489,40 @@ export class SharedMemoryDO {
     }
   }
 
+  async addActivity(
+    interviewId: string,
+    event: ActivityEventInput
+  ): Promise<ActivityEvent> {
+    const scope = `interview:${interviewId}`;
+    const existing = await this.getScoped<ActivityEvent[]>(scope, "activity");
+    const list = existing?.value ?? [];
+    const saved: ActivityEvent = {
+      ...event,
+      id: `act-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: new Date().toISOString()
+    };
+    list.push(saved);
+    // Cap the list to keep the scoped row bounded
+    const trimmed =
+      list.length > ACTIVITY_LIMIT ? list.slice(-ACTIVITY_LIMIT) : list;
+    await this.setScoped(scope, "activity", trimmed);
+    return saved;
+  }
+
+  async listActivity(
+    interviewId: string,
+    options?: { since?: string; limit?: number }
+  ): Promise<ActivityEvent[]> {
+    const scope = `interview:${interviewId}`;
+    const existing = await this.getScoped<ActivityEvent[]>(scope, "activity");
+    const list = existing?.value ?? [];
+    const filtered = options?.since
+      ? list.filter((e) => e.timestamp > options.since!)
+      : list;
+    const limit = options?.limit ?? 200;
+    return filtered.slice(-limit);
+  }
+
   async addAlert(
     interviewId: string,
     agentId: string,
@@ -623,5 +708,33 @@ export class SharedMemoryClient implements ISharedMemory {
       point,
       agentId
     });
+  }
+
+  async addActivity(
+    interviewId: string,
+    event: ActivityEventInput
+  ): Promise<ActivityEvent | null> {
+    try {
+      const result = await this.request<{ event: ActivityEvent }>(
+        "POST",
+        "/add-activity",
+        undefined,
+        { interviewId, event }
+      );
+      return result.event;
+    } catch (error) {
+      console.warn("addActivity failed:", error);
+      return null;
+    }
+  }
+
+  async listActivity(
+    interviewId: string,
+    options?: { since?: string; limit?: number }
+  ): Promise<ActivityEvent[]> {
+    const params: Record<string, string> = { interviewId };
+    if (options?.since) params.since = options.since;
+    if (options?.limit) params.limit = String(options.limit);
+    return this.request("GET", "/activity", params);
   }
 }

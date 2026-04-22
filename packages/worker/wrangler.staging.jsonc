@@ -44,6 +44,10 @@
         "class_name": "DomainExpertAgent"
       },
       {
+        "name": "BEHAVIORAL_INTERVIEWER",
+        "class_name": "BehavioralInterviewerAgent"
+      },
+      {
         "name": "SharedMemory",
         "class_name": "SharedMemoryDO"
       }
@@ -64,6 +68,10 @@
         "DomainExpertAgent",
         "SharedMemoryDO"
       ]
+    },
+    {
+      "tag": "v3",
+      "new_sqlite_classes": ["BehavioralInterviewerAgent"]
     }
   ],
   "observability": {

@@ -13,3 +13,5 @@ export { RecruiterAgent } from "./recruiter/recruiter.agent.js";
 export { TechnicalInterviewerAgent } from "./technical/technical.agent.js";
 export { CultureInterviewerAgent } from "./culture/culture.agent.js";
 export { DomainExpertAgent } from "./domain-expert/domain-expert.agent.js";
+export { BehavioralInterviewerAgent } from "./behavioral/behavioral.agent.js";
+export { BiasAuditAgent } from "./bias-audit/bias-audit.agent.js";

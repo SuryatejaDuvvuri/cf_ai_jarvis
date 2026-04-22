@@ -117,6 +117,8 @@ export interface CombinedScorecard {
     decidedAt: string;
     notes?: string;
   };
+  /** Bias flags raised by the BiasAuditAgent (present if bias was detected) */
+  biasFlags?: import("./bias-audit.js").BiasAuditFlag[];
   /** Timestamps */
   createdAt: string;
   updatedAt: string;
