@@ -35,7 +35,8 @@ async function readTextFromUpload(file: File): Promise<string> {
   const name = file.name.toLowerCase();
 
   if (name.endsWith(".pdf")) {
-    // pdfjs 5 relies on Promise.withResolvers in some runtimes; polyfill if missing.
+    // pdfjs-dist v5: legacy/ path was removed; use build/pdf.mjs directly.
+    // Promise.withResolvers polyfill for Safari < 17.4 / older runtimes.
     if (!("withResolvers" in Promise)) {
       (
         Promise as PromiseConstructor & {
@@ -57,40 +58,14 @@ async function readTextFromUpload(file: File): Promise<string> {
     }
 
     const data = new Uint8Array(await file.arrayBuffer());
-    const loadPdfJs = async () => {
-      try {
-        return (await import("pdfjs-dist/legacy/build/pdf.mjs")) as {
-          getDocument: (input: {
-            data: Uint8Array;
-            disableWorker?: boolean;
-          }) => { promise: Promise<unknown> };
-        };
-      } catch {
-        try {
-          const minifiedPath = "pdfjs-dist/legacy/build/pdf.min.mjs";
-          return (await import(/* @vite-ignore */ minifiedPath)) as {
-            getDocument: (input: {
-              data: Uint8Array;
-              disableWorker?: boolean;
-            }) => { promise: Promise<unknown> };
-          };
-        } catch {
-          const fallbackPath = "pdfjs-dist/build/pdf.mjs";
-          return (await import(/* @vite-ignore */ fallbackPath)) as {
-            getDocument: (input: {
-              data: Uint8Array;
-              disableWorker?: boolean;
-            }) => { promise: Promise<unknown> };
-          };
-        }
-      }
+    // Dynamic import keeps pdfjs out of the main bundle (lazy-loaded on demand).
+    const pdfjs = (await import("pdfjs-dist/build/pdf.mjs")) as {
+      getDocument: (input: { data: Uint8Array; disableWorker?: boolean }) => {
+        promise: Promise<unknown>;
+      };
     };
 
-    const pdfjs = await loadPdfJs();
-    const loadingTask = pdfjs.getDocument({
-      data,
-      disableWorker: true
-    });
+    const loadingTask = pdfjs.getDocument({ data, disableWorker: true });
     const pdf = (await loadingTask.promise) as {
       numPages: number;
       getPage: (pageNumber: number) => Promise<{
@@ -104,7 +79,7 @@ async function readTextFromUpload(file: File): Promise<string> {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const textContent = await page.getTextContent();
-      // Filter out TextMarkedContent entries (no `str`), respect hasEOL for line breaks
+      // Filter TextMarkedContent entries (no `str`), use hasEOL for real line breaks
       const pageText = textContent.items
         .filter((item) => typeof item.str === "string")
         .map((item) => (item.hasEOL ? `${item.str}\n` : (item.str ?? "")))
@@ -117,7 +92,9 @@ async function readTextFromUpload(file: File): Promise<string> {
 
     const extracted = normalize(pages.join("\n\n"));
     if (!extracted) {
-      throw new Error("empty-pdf-text");
+      throw new Error(
+        "No text found in this PDF. If it is a scanned document, you will need to run OCR first or paste the text manually."
+      );
     }
     return extracted;
   }
