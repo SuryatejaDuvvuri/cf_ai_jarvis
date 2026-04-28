@@ -49,6 +49,10 @@
         "class_name": "BehavioralInterviewerAgent"
       },
       {
+        "name": "BIAS_AUDIT",
+        "class_name": "BiasAuditAgent"
+      },
+      {
         "name": "SharedMemory",
         "class_name": "SharedMemoryDO"
       }
@@ -73,6 +77,10 @@
     {
       "tag": "v3",
       "new_sqlite_classes": ["BehavioralInterviewerAgent"]
+    },
+    {
+      "tag": "v4",
+      "new_sqlite_classes": ["BiasAuditAgent"]
     }
   ],
   "observability": {
@@ -83,7 +91,14 @@
     "AI_PROVIDER": "workers-ai",
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "AI_BASE_URL": "",
-    "AI_API_KEY": ""
+    "AI_API_KEY": "",
+    "ELEVENLABS_API_KEY": "",
+    "ELEVENLABS_VOICE_ORCHESTRATOR": "onwK4e9ZLuTAKqWW03F9",
+    "ELEVENLABS_VOICE_RECRUITER": "EXAVITQu4vr4xnSDxMaL",
+    "ELEVENLABS_VOICE_TECHNICAL": "TX3LPaxmHKxFdv7VOQHJ",
+    "ELEVENLABS_VOICE_CULTURE": "XrExE9yKIg1WjnnlVkGX",
+    "ELEVENLABS_VOICE_DOMAIN": "bIHbv24MWmeRgasZH58o",
+    "ELEVENLABS_VOICE_BEHAVIORAL": "XB0fDUnXU5powFXDhCwa"
   },
   "placement": {
     "mode": "smart"
