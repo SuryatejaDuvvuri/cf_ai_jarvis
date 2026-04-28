@@ -25,55 +25,7 @@ Multi-agent AI panel interview platform built on Cloudflare Workers. Extends the
 
 ### What's Next — Step 0.2 (THE BIG MOVE):
 
-Move all existing source files from the root `src/` into the correct packages. This is the riskiest step — file moves without logic changes, but all import paths must be updated.
-
-**File mapping:**
-
-| Current Location                                       | New Location                                 | Package           |
-| ------------------------------------------------------ | -------------------------------------------- | ----------------- |
-| `src/server.ts` (Chat DO class, ~lines 35-284)         | `packages/agents/src/jarvis/jarvis.agent.ts` | @panelai/agents   |
-| `src/server.ts` (Worker fetch handler, ~lines 289-363) | `packages/worker/src/index.ts`               | @panelai/worker   |
-| `src/server.ts` (transcribe/speak endpoints)           | `packages/worker/src/index.ts`               | @panelai/worker   |
-| `src/tools.ts`                                         | `packages/agents/src/jarvis/jarvis.tools.ts` | @panelai/agents   |
-| `src/utils.ts`                                         | `packages/shared/src/utils/index.ts`         | @panelai/shared   |
-| `src/shared.ts`                                        | `packages/shared/src/constants/index.ts`     | @panelai/shared   |
-| `src/app.tsx`                                          | `packages/frontend/src/app.tsx`              | @panelai/frontend |
-| `src/client.tsx`                                       | `packages/frontend/src/client.tsx`           | @panelai/frontend |
-| `src/styles.css`                                       | `packages/frontend/src/styles.css`           | @panelai/frontend |
-| `src/components/`                                      | `packages/frontend/src/components/`          | @panelai/frontend |
-| `src/hooks/`                                           | `packages/frontend/src/hooks/`               | @panelai/frontend |
-| `src/providers/`                                       | `packages/frontend/src/providers/`           | @panelai/frontend |
-| `src/lib/`                                             | `packages/frontend/src/lib/`                 | @panelai/frontend |
-| `wrangler.jsonc`                                       | `packages/worker/wrangler.jsonc`             | @panelai/worker   |
-| `vite.config.ts`                                       | `packages/worker/vite.config.ts`             | @panelai/worker   |
-| `vitest.config.ts`                                     | `packages/worker/vitest.config.ts`           | @panelai/worker   |
-| `index.html`                                           | `packages/worker/index.html`                 | @panelai/worker   |
-| `env.d.ts`                                             | `packages/worker/env.d.ts`                   | @panelai/worker   |
-| `biome.json`                                           | `packages/worker/biome.json`                 | @panelai/worker   |
-| `.prettierrc`                                          | stays at root (global)                       | root              |
-| `tests/`                                               | `packages/worker/__tests__/`                 | @panelai/worker   |
-| `public/`                                              | `packages/worker/public/`                    | @panelai/worker   |
-
-**Key challenge:** `src/server.ts` must be SPLIT — the Chat Durable Object class goes to agents package, the Worker fetch handler + HTTP routes stay in worker package. The worker imports the Chat class from `@panelai/agents`.
-
-**Verification after Step 0.2:** `npm run dev` starts Jarvis exactly as before. `turbo run test` passes the existing sanity test.
-
-### Remaining Phase 0 Steps (after 0.2):
-
-- **Step 0.3:** Create `wrangler.staging.jsonc` + `wrangler.production.jsonc` (different worker names)
-- **Step 0.4:** Install Husky + commitlint + lint-staged (git hooks for commit conventions)
-- **Step 0.5:** Install Changesets (release management)
-- **Step 0.6:** Create GitHub Actions workflows (ci.yml, deploy.yml, release.yml)
-- **Step 0.7:** Create PR template, CODEOWNERS, CONTRIBUTING.md, CODE_REVIEW.md
-- **Step 0.8:** Final verification, tag v0.1.0
-
-### After Phase 0 — Product Build Phases:
-
-- **Phase 1 (Week 3-4):** Multi-agent foundation — CoreAgent base class, A2A protocol, shared memory, agent stubs
-- **Phase 2 (Week 5-8):** Full hiring pipeline + panel interview MVP — Recruiter Agent (resume parsing, scoring, shortlist), Orchestrator (phased workflow), 3 interviewer agents, dashboard UI. **This is the demo version.**
-- **Phase 3 (Week 9-10):** RAG knowledge layer (external LlamaIndex service)
-- **Phase 4 (Week 11-12):** CRM/ATS integrations (HubSpot, Slack, Google Calendar)
-- **Phase 5 (Week 13+):** Receptionist mode (Twilio, optional)
+Move existing source files from root `src/` into the correct packages. File mapping, split rules, and verification steps live in `.claude/plans/glimmering-mixing-axolotl.md` (Step 0.2 section) — read that before starting.
 
 ### Key Technical Decisions (don't change these without discussing with user):
 
@@ -81,8 +33,7 @@ Move all existing source files from the root `src/` into the correct packages. T
 2. **No external agent frameworks** — patterns from AutoGen/LangGraph/BeeAI implemented natively in TS on Cloudflare
 3. **@panelai/worker is the build root** — Cloudflare Vite plugin needs index.html at vite config root
 4. **No company names in codebase** — project is "PanelAI", scope is @panelai/\*
-5. **Trust + verify** — always explain complex code so user can verify intuitively
-6. **npm (not pnpm)** — workspace deps use `"*"` not `"workspace:*"`
+5. **npm (not pnpm)** — workspace deps use `"*"` not `"workspace:*"`
 
 ## Architecture
 
@@ -143,10 +94,6 @@ chore(ci): add staging deployment step
 - No direct pushes to main
 - Squash merges for linear history
 
-### Trust + Verify
-
-When writing complex code, always include comments explaining the "why" — not just what the code does, but why it does it that way. This helps the human verify correctness intuitively without having to trace every line.
-
 ## Key Design Patterns
 
 Built natively in TypeScript on Cloudflare Workers. Inspired by (but not depending on) AutoGen, LangGraph, BeeAI, and Andrew Ng's agentic design patterns.
@@ -171,15 +118,6 @@ Built natively in TypeScript on Cloudflare Workers. Inspired by (but not dependi
 | 2026-04-05 | Human-in-the-loop by design     | AI recommends, humans decide. Built for compliance                                            |
 | 2026-04-05 | @panelai scope                  | Neutral branding, no company-specific names in codebase                                       |
 | 2026-04-05 | Full recruiter pipeline         | Resume parsing → scoring → shortlist before interview even starts                             |
-
-## Mistakes & Solutions
-
-Track mistakes here so we never repeat them. Update this after every incident.
-
-| Date       | Mistake                                                                                                 | Solution                                                   | Files Affected           |
-| ---------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- | ------------------------ |
-| 2026-04-05 | Used `workspace:*` protocol in package.json — that's pnpm syntax. npm 9.x uses `"*"` for workspace deps | Changed all workspace deps from `"workspace:*"` to `"*"`   | packages/\*/package.json |
-| 2026-04-05 | Turborepo 2.9.x requires `packageManager` field in root package.json                                    | Added `"packageManager": "npm@9.7.2"` to root package.json | package.json             |
 
 ## Environment Setup
 

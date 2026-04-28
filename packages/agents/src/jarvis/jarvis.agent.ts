@@ -35,10 +35,24 @@ type PanelSpeakerId =
 type SpecialistSpeakerId = Exclude<PanelSpeakerId, "orchestrator">;
 
 interface PanelRoute {
-  mode: "welcome" | "interview" | "closing";
+  mode: "welcome" | "interview" | "closing" | "candidate-qa";
   primary: PanelSpeakerId;
   coordinated: SpecialistSpeakerId[];
   reason: string;
+  /**
+   * Ordered list of all panelists (including the moderator) that should
+   * respond in candidate Q&A mode. Only populated when mode === "candidate-qa".
+   */
+  qaSpeakers?: PanelSpeakerId[];
+  /**
+   * When routing the same speaker back because the candidate's answer was thin
+   * or dodged the question, carry the prior question + reason so the specialist
+   * can probe the specific gap rather than ask a fresh question.
+   */
+  followUpHint?: {
+    priorQuestion: string;
+    assessmentReason: string;
+  };
 }
 
 interface SimpleTurnMessage {
@@ -73,10 +87,85 @@ const REQUIRED_SPECIALISTS: SpecialistSpeakerId[] = [
 ];
 
 const MAX_COORDINATED_SPECIALISTS = 2;
+const MAX_CANDIDATE_QA_SPEAKERS = 4;
+const CANDIDATE_QA_SPEAKER_DELAY_MS = 600;
 const SOFT_CLOSE_SPECIALIST_TURN_THRESHOLD = 7;
 const HARD_CLOSE_SPECIALIST_TURN_THRESHOLD = 10;
 const INTERNAL_KEY_PREFIX = "__internal:";
 const QUEUED_PANEL_FOLLOW_UP_KEY = `${INTERNAL_KEY_PREFIX}queued_panel_follow_up`;
+
+// Limit how much chat history we forward to model calls to reduce TPM pressure
+// on rate-limited providers (e.g. Groq). The router still analyzes the full
+// transcript — trimming only applies to the prompts sent to the LLM.
+const MAX_MODEL_HISTORY_MESSAGES = 12;
+const MAX_SIMPLE_MESSAGE_CHARS = 1200;
+
+function trimUIMessagesForModel(messages: UIMessage[]): UIMessage[] {
+  if (messages.length <= MAX_MODEL_HISTORY_MESSAGES) {
+    return messages;
+  }
+  return messages.slice(-MAX_MODEL_HISTORY_MESSAGES);
+}
+
+function trimSimpleMessagesForModel(
+  messages: SimpleTurnMessage[]
+): SimpleTurnMessage[] {
+  const sliced =
+    messages.length > MAX_MODEL_HISTORY_MESSAGES
+      ? messages.slice(-MAX_MODEL_HISTORY_MESSAGES)
+      : messages;
+  return sliced.map((message) => {
+    if (message.content.length <= MAX_SIMPLE_MESSAGE_CHARS) {
+      return message;
+    }
+    return {
+      ...message,
+      content: `${message.content.slice(0, MAX_SIMPLE_MESSAGE_CHARS)}…`
+    };
+  });
+}
+
+/**
+ * In candidate Q&A mode, panelists are supposed to *answer* the candidate's
+ * question — not ask a new interview question. Models often append a trailing
+ * "Can you discuss…?" style question anyway. This helper trims any trailing
+ * question sentences so the answer stays focused.
+ */
+function stripTrailingInterviewerQuestion(text: string): string {
+  const trimmed = text.trim();
+  if (!trimmed.endsWith("?")) {
+    return trimmed;
+  }
+
+  // Split into sentences while preserving terminators.
+  const sentences = trimmed.match(/[^.!?]+[.!?]+/g);
+  if (!sentences || sentences.length === 0) {
+    return trimmed;
+  }
+
+  const interviewerQuestionPattern =
+    /^\s*(?:can you|could you|would you|how would you|what (?:would|do|are|is)|why (?:do|is|would)|describe|walk me through|tell me|explain)\b/i;
+
+  let cutIndex = sentences.length;
+  for (let i = sentences.length - 1; i >= 0; i -= 1) {
+    const sentence = sentences[i].trim();
+    if (!sentence.endsWith("?")) {
+      break;
+    }
+    if (interviewerQuestionPattern.test(sentence)) {
+      cutIndex = i;
+      continue;
+    }
+    break;
+  }
+
+  if (cutIndex === sentences.length) {
+    return trimmed;
+  }
+
+  const kept = sentences.slice(0, cutIndex).join("").trim();
+  return kept.length > 0 ? kept : trimmed;
+}
 
 const SPEAKER_PATTERNS: Array<{ id: PanelSpeakerId; pattern: RegExp }> = [
   {
@@ -890,6 +979,48 @@ Candidate response: ${answer}`
       (speaker): speaker is SpecialistSpeakerId => speaker !== "orchestrator"
     );
 
+    // ── Candidate Q&A phase ──────────────────────────────────────────────
+    // After the moderator asks "Do you have any questions for the panel?",
+    // the candidate may address questions to one or more panelists. Collect
+    // every mentioned panelist (including Alex) and answer them sequentially.
+    const lastAssistantMessage = [...assistantMessages].pop();
+    const lastAssistantText = lastAssistantMessage
+      ? getMessageText(lastAssistantMessage)
+      : "";
+    const moderatorOpenedQa =
+      this.looksLikeClosingLanguage(lastAssistantText) &&
+      /any questions for the panel/i.test(lastAssistantText);
+    const candidateAskedQuestion =
+      /\?\s*$/.test(userText.trim()) || userText.includes("?");
+
+    if (moderatorOpenedQa && candidateAskedQuestion && !closingIntent) {
+      const mentionedPanelists = detectSpeakerMentions(userText).slice(
+        0,
+        MAX_CANDIDATE_QA_SPEAKERS
+      );
+      if (mentionedPanelists.length > 0) {
+        const [primary, ...rest] = mentionedPanelists;
+        return {
+          mode: "candidate-qa",
+          primary,
+          coordinated: rest.filter(
+            (speaker): speaker is SpecialistSpeakerId =>
+              speaker !== "orchestrator"
+          ),
+          qaSpeakers: mentionedPanelists,
+          reason: "candidate-question-to-panel"
+        };
+      }
+
+      return {
+        mode: "candidate-qa",
+        primary: "orchestrator",
+        coordinated: [],
+        qaSpeakers: ["orchestrator"],
+        reason: "candidate-question-no-mention"
+      };
+    }
+
     const strongestTopicScore = Math.max(...Object.values(topicScores));
     const hasTargetedFollowUp =
       strongestTopicScore > 0 || userMentionedSpecialists.length > 0;
@@ -922,11 +1053,18 @@ Candidate response: ${answer}`
       (!lastResponseAssessment.addressed ||
         lastResponseAssessment.depth === "thin")
     ) {
+      const priorQuestion = this.getLastAssistantQuestion(messages);
       return {
         mode: "interview",
         primary: lastSpecialist,
         coordinated: [],
-        reason: `same-speaker-follow-up:${lastResponseAssessment.reason}`
+        reason: `same-speaker-follow-up:${lastResponseAssessment.reason}`,
+        followUpHint: priorQuestion
+          ? {
+              priorQuestion,
+              assessmentReason: lastResponseAssessment.reason
+            }
+          : undefined
       };
     }
 
@@ -992,13 +1130,17 @@ Candidate response: ${answer}`
     simpleMessages: SimpleTurnMessage[];
     candidateContext?: string;
     interviewId?: string;
+    answerMode?: boolean;
+    followUpHint?: { priorQuestion: string; assessmentReason: string };
   }): Promise<string> {
     const {
       speakerId,
       bindingKey,
       simpleMessages,
       candidateContext,
-      interviewId
+      interviewId,
+      answerMode = false,
+      followUpHint
     } = options;
 
     const ns = (this.env as unknown as Record<string, unknown>)[bindingKey] as
@@ -1006,17 +1148,31 @@ Candidate response: ${answer}`
       | undefined;
 
     const speakerName = PANEL_SPEAKERS[speakerId].name;
-    const specialistText = `${speakerName}: I will jump in with the next question.`;
+    const specialistText = answerMode
+      ? `${speakerName}: Thanks for the question — happy to share a quick thought.`
+      : `${speakerName}: I will jump in with the next question.`;
 
     if (!ns) {
       return specialistText;
     }
 
     try {
-      const delegatedContext = [
-        candidateContext,
-        'Panel moderation rules:\n- Ask exactly one concise question in your specialist lane\n- Never close or conclude the interview\n- Never ask "Do you have any questions for the panel?"\n- Alex Monroe handles all closing and wrap-up prompts\n- Do not simulate other panelists or candidate responses'
-      ]
+      let moderationRules: string;
+      if (answerMode) {
+        moderationRules = `Candidate Q&A rules:\n- The candidate has asked YOU a direct question at the end of the interview\n- Answer briefly and thoughtfully (2-4 sentences) from your specialist perspective\n- Do NOT ask a new interview question\n- Do NOT close or conclude the interview\n- Stay in character as ${speakerName}\n- Do not simulate other panelists or the candidate`;
+      } else if (followUpHint) {
+        const reasonLabel =
+          followUpHint.assessmentReason === "explicit-non-answer"
+            ? "said they didn't know"
+            : followUpHint.assessmentReason === "too-short"
+              ? "gave a very brief reply without detail"
+              : "gave a vague or incomplete answer";
+        moderationRules = `Panel moderation rules — FOLLOW-UP REQUIRED:\n- Your previous question was: "${followUpHint.priorQuestion}"\n- The candidate ${reasonLabel} and did NOT satisfactorily answer it\n- Do NOT move on to a new topic\n- Probe the same question from a different angle: ask for a concrete example, dig into a specific aspect, or ask "why" to get more depth\n- Keep your follow-up short and direct (one question only)\n- Never ask "Do you have any questions for the panel?"\n- Alex Monroe handles all closing and wrap-up prompts\n- Do not simulate other panelists or candidate responses`;
+      } else {
+        moderationRules = `Panel moderation rules:\n- Ask exactly one concise question in your specialist lane\n- Never close or conclude the interview\n- Never ask "Do you have any questions for the panel?"\n- Alex Monroe handles all closing and wrap-up prompts\n- Do not simulate other panelists or candidate responses`;
+      }
+
+      const delegatedContext = [candidateContext, moderationRules]
         .filter(
           (value): value is string =>
             typeof value === "string" && value.trim().length > 0
@@ -1216,25 +1372,120 @@ Candidate response: ${answer}`
           executions
         });
 
+        // ── Candidate Q&A multi-speaker answers ─────────────────────────
+        // When the candidate asks closing questions addressed to one or more
+        // panelists, stream each addressed panelist's answer sequentially in
+        // the same turn with a short pacing delay between them.
+        if (route.mode === "candidate-qa" && route.qaSpeakers?.length) {
+          const qaSimpleMessages = trimSimpleMessagesForModel(
+            this.toSimpleMessages(processedMessages)
+          );
+          const qaCandidateQuestion = this.getLatestUserText(processedMessages);
+          let lastAnswerText = "";
+
+          for (let i = 0; i < route.qaSpeakers.length; i += 1) {
+            const speakerId = route.qaSpeakers[i];
+            const speakerName = PANEL_SPEAKERS[speakerId].name;
+
+            let rawAnswer: string;
+            if (speakerId === "orchestrator") {
+              try {
+                const moderatorResult = await generateText({
+                  model,
+                  maxRetries: 1,
+                  maxOutputTokens: 220,
+                  system: `You are Alex Monroe, the moderator of a live panel interview at PanelAI. The candidate has just asked a question directed at you. Answer briefly and thoughtfully (2-3 sentences). Do NOT ask a new question. Do NOT simulate other panelists. Stay in character.`,
+                  prompt: `Candidate question to address:\n${qaCandidateQuestion}`
+                });
+                rawAnswer = moderatorResult.text;
+              } catch (error) {
+                console.warn("Orchestrator Q&A answer failed:", error);
+                rawAnswer = `${speakerName}: Thanks for the question — I appreciate you taking the time to ask.`;
+              }
+            } else {
+              const bindingKey = SPEAKER_BINDING[speakerId];
+              if (!bindingKey) {
+                continue;
+              }
+              rawAnswer = await this.callSpecialistTurn({
+                speakerId,
+                bindingKey,
+                simpleMessages: qaSimpleMessages,
+                candidateContext: memoryContext || undefined,
+                answerMode: true
+              });
+            }
+
+            const normalized = this.normalizeSpecialistTurnText(
+              speakerId,
+              rawAnswer
+            );
+            const trimmedAnswer = stripTrailingInterviewerQuestion(normalized);
+            const answerText =
+              trimmedAnswer.length > 0
+                ? trimmedAnswer
+                : `${speakerName}: Thanks for the question.`;
+
+            const msgId = generateId();
+            const qaStream = new ReadableStream({
+              start(controller) {
+                controller.enqueue({ type: "text-start", id: msgId });
+                controller.enqueue({
+                  type: "text-delta",
+                  id: msgId,
+                  delta: answerText
+                });
+                controller.enqueue({ type: "text-end", id: msgId });
+                controller.close();
+              }
+            });
+
+            writer.merge(qaStream as ReadableStream);
+            lastAnswerText = answerText;
+
+            if (i < route.qaSpeakers.length - 1) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, CANDIDATE_QA_SPEAKER_DELAY_MS)
+              );
+            }
+          }
+
+          // biome-ignore lint/suspicious/noExplicitAny: SDK callback
+          (onFinish as any)({
+            text: lastAnswerText,
+            usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+            finishReason: "stop",
+            toolCalls: [],
+            toolResults: []
+          });
+
+          return;
+        }
+
         // ── Specialist DO delegation ─────────────────────────────────────
         // Route turns dynamically to whichever specialist best fits the latest
         // candidate response; optionally run a coordinated dual specialist turn.
         const primaryBindingKey = SPEAKER_BINDING[route.primary];
 
         if (primaryBindingKey) {
-          const simpleMessages = this.toSimpleMessages(processedMessages);
+          const simpleMessages = trimSimpleMessagesForModel(
+            this.toSimpleMessages(processedMessages)
+          );
           const latestUserText = this.getLatestUserText(processedMessages);
           const specialistTurnsSoFar =
             this.countSpecialistTurns(processedMessages);
           const isPrimaryFirstTurn =
             route.primary !== "orchestrator" &&
             !this.hasSpeakerSpoken(processedMessages, route.primary);
+          const isCandidateQaMode = route.mode === "candidate-qa";
 
           const primaryText = await this.callSpecialistTurn({
             speakerId: route.primary,
             bindingKey: primaryBindingKey,
             simpleMessages,
-            candidateContext: memoryContext || undefined
+            candidateContext: memoryContext || undefined,
+            answerMode: isCandidateQaMode,
+            followUpHint: route.followUpHint
           });
 
           const immediateTurnText = this.normalizeSpecialistTurnText(
@@ -1261,7 +1512,11 @@ Candidate response: ${answer}`
           }
 
           const nextCoordinatedSpeaker = route.coordinated[0];
-          if (nextCoordinatedSpeaker && !forcedModeratorClose) {
+          if (
+            nextCoordinatedSpeaker &&
+            !forcedModeratorClose &&
+            !isCandidateQaMode
+          ) {
             const bindingKey = SPEAKER_BINDING[nextCoordinatedSpeaker];
             const primarySpeakerName = PANEL_SPEAKERS[route.primary].name;
             const shouldBridgeFollowUp = this.shouldBridgeFollowUp({
@@ -1379,7 +1634,22 @@ Candidate response: ${answer}`
 ${memoryContext}
 
 MEMORY: Save persistent facts like [MEMORY: name=John], [MEMORY: role_applied=Engineer].`
-            : `You are Alex Monroe, the moderator of a live panel interview at PanelAI.
+            : route.mode === "candidate-qa"
+              ? `You are Alex Monroe, the moderator of a live panel interview at PanelAI.
+
+## Task
+- The candidate has just asked a general question to the panel at the end of the interview
+- Answer briefly and thoughtfully as the moderator (2-4 sentences)
+- Do NOT ask a new interview question
+- Do NOT simulate other panelists' answers
+- If the question is clearly aimed at a specific panelist, acknowledge that and keep your answer short
+
+## Rules
+- Stay in character as Alex Monroe
+- Do not reveal you are an AI unless directly asked
+
+${memoryContext}`
+              : `You are Alex Monroe, the moderator of a live panel interview at PanelAI.
 
 ## Your Panel
 - **Alex Monroe** (you) — Orchestrator & Moderator. Warm, professional, puts candidates at ease.
@@ -1411,12 +1681,15 @@ ${memoryContext}
 
 MEMORY: Save persistent facts like [MEMORY: name=John], [MEMORY: role_applied=Engineer].`;
 
+        const trimmedModelMessages = trimUIMessagesForModel(processedMessages);
+
         const result = streamText({
           system: orchestratorSystem,
-          messages: await convertToModelMessages(processedMessages),
+          messages: await convertToModelMessages(trimmedModelMessages),
           model,
           tools: shouldUseTool ? allTools : undefined,
           toolChoice: shouldUseTool ? "auto" : undefined,
+          maxRetries: 1,
           onFinish: async (result) => {
             const text = result.text;
             const memoryRegex = /\[MEMORY:\s*([^=]+)=([^\]]+)\]/g;

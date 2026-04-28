@@ -94,7 +94,9 @@ async function readTextFromUpload(file: File): Promise<string> {
     const pdf = (await loadingTask.promise) as {
       numPages: number;
       getPage: (pageNumber: number) => Promise<{
-        getTextContent: () => Promise<{ items: Array<{ str?: string }> }>;
+        getTextContent: () => Promise<{
+          items: Array<{ str?: string; hasEOL?: boolean }>;
+        }>;
       }>;
     };
 
@@ -102,16 +104,18 @@ async function readTextFromUpload(file: File): Promise<string> {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const textContent = await page.getTextContent();
+      // Filter out TextMarkedContent entries (no `str`), respect hasEOL for line breaks
       const pageText = textContent.items
-        .map((item) => item.str ?? "")
-        .join(" ")
+        .filter((item) => typeof item.str === "string")
+        .map((item) => (item.hasEOL ? `${item.str}\n` : (item.str ?? "")))
+        .join("")
         .trim();
       if (pageText.length > 0) {
         pages.push(pageText);
       }
     }
 
-    const extracted = normalize(pages.join("\n"));
+    const extracted = normalize(pages.join("\n\n"));
     if (!extracted) {
       throw new Error("empty-pdf-text");
     }
@@ -126,10 +130,12 @@ async function readTextFromUpload(file: File): Promise<string> {
     return normalize(result.value);
   }
 
-  // Legacy .doc files are not reliably parseable in-browser. Best-effort fallback.
+  // Legacy .doc (OLE binary format) cannot be parsed in-browser without a
+  // native library. Ask the user to convert to .docx or paste text instead.
   if (name.endsWith(".doc")) {
-    const raw = await file.text();
-    return normalize(raw);
+    throw new Error(
+      "Legacy .doc format is not supported. Please convert to .docx (File → Save As in Word), upload a .pdf, or paste the text directly."
+    );
   }
 
   const raw = await file.text();
@@ -865,9 +871,14 @@ function JobsTab({
       if (text.length > 0) {
         setDescription(text);
       }
-    } catch {
+    } catch (error) {
+      const reason =
+        error instanceof Error && error.message
+          ? ` ${error.message.slice(0, 160)}`
+          : "";
       setSyncMessage(
-        "Unable to read JD file. Try .txt/.md/.pdf/.docx or paste manually."
+        reason ||
+          "Unable to read JD file. Try .txt/.md/.pdf/.docx or paste manually."
       );
     } finally {
       setIngestingJD(false);
